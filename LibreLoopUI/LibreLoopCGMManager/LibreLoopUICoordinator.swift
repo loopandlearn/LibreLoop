@@ -24,39 +24,70 @@ final class LibreLoopUICoordinator: UINavigationController, CGMManagerOnboarding
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        navigationBar.prefersLargeTitles = true
-        setViewControllers([initialView()], animated: false)
+        navigationBar.prefersLargeTitles = false
+        if cgmManager == nil {
+            setViewControllers([applySensorViewController()], animated: false)
+        } else {
+            setViewControllers([settingsViewController()], animated: false)
+        }
     }
 
-    private func initialView() -> UIViewController {
-        if cgmManager == nil {
-            let view = LibreLoopStartupView(
-                didContinue: { [weak self] in self?.completeSetup() },
-                didCancel: { [weak self] in
-                    guard let self else { return }
-                    self.completionDelegate?.completionNotifyingDidComplete(self)
-                }
-            )
-            return DismissibleHostingController(content: view, colorPalette: colorPalette)
-        } else {
-            let view = LibreLoopSettingsView(
-                viewModel: LibreLoopSettingsViewModel(cgmManager: cgmManager!),
-                didFinish: { [weak self] in
-                    guard let self else { return }
-                    self.completionDelegate?.completionNotifyingDidComplete(self)
-                },
-                deleteCGM: { [weak self] in
-                    self?.cgmManager?.notifyDelegateOfDeletion {
-                        DispatchQueue.main.async {
-                            guard let self = self else { return }
-                            self.completionDelegate?.completionNotifyingDidComplete(self)
-                            self.dismiss(animated: true)
-                        }
-                    }
-                }
-            )
-            return DismissibleHostingController(content: view, colorPalette: colorPalette)
-        }
+    // MARK: - Onboarding flow
+
+    private func applySensorViewController() -> UIViewController {
+        let view = LibreLoopApplySensorView(
+            onNext: { [weak self] in self?.pushScanSensorView() },
+            onShowHelp: { [weak self] in self?.presentApplyHelp() },
+            onCancel: { [weak self] in self?.cancelOnboarding() }
+        )
+        return DismissibleHostingController(content: view, colorPalette: colorPalette)
+    }
+
+    private func pushScanSensorView() {
+        let view = LibreLoopScanSensorView(
+            onScan: { [weak self] in self?.startScan() },
+            onShowHelp: { [weak self] in self?.presentScanHelp() },
+            onShowRecovery: { [weak self] in self?.showRecoveryPlaceholder() },
+            onCancel: { [weak self] in self?.cancelOnboarding() }
+        )
+        let vc = DismissibleHostingController(content: view, colorPalette: colorPalette)
+        pushViewController(vc, animated: true)
+    }
+
+    private func presentApplyHelp() {
+        let view = LibreLoopApplyHelpPagerView(onDone: { [weak self] in
+            self?.dismiss(animated: true)
+        })
+        let host = DismissibleHostingController(content: view, colorPalette: colorPalette)
+        present(host, animated: true)
+    }
+
+    private func presentScanHelp() {
+        let view = LibreLoopScanHelpPagerView(onDone: { [weak self] in
+            self?.dismiss(animated: true)
+        })
+        let host = DismissibleHostingController(content: view, colorPalette: colorPalette)
+        present(host, animated: true)
+    }
+
+    private func startScan() {
+        // TODO: trigger CoreNFC reader session + LibreCRKit PairingFlow.firstPair.
+        // For now this just completes onboarding so the rest of the wiring stays exercised.
+        completeSetup()
+    }
+
+    private func showRecoveryPlaceholder() {
+        let alert = UIAlertController(
+            title: "Recovery",
+            message: "Recovery flow not yet implemented. Tap Start pairing for a fresh sensor.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+
+    private func cancelOnboarding() {
+        completionDelegate?.completionNotifyingDidComplete(self)
     }
 
     private func completeSetup() {
@@ -65,5 +96,27 @@ final class LibreLoopUICoordinator: UINavigationController, CGMManagerOnboarding
         cgmManagerOnboardingDelegate?.cgmManagerOnboarding(didCreateCGMManager: manager)
         cgmManagerOnboardingDelegate?.cgmManagerOnboarding(didOnboardCGMManager: manager)
         completionDelegate?.completionNotifyingDidComplete(self)
+    }
+
+    // MARK: - Settings
+
+    private func settingsViewController() -> UIViewController {
+        let view = LibreLoopSettingsView(
+            viewModel: LibreLoopSettingsViewModel(cgmManager: cgmManager!),
+            didFinish: { [weak self] in
+                guard let self else { return }
+                self.completionDelegate?.completionNotifyingDidComplete(self)
+            },
+            deleteCGM: { [weak self] in
+                self?.cgmManager?.notifyDelegateOfDeletion {
+                    DispatchQueue.main.async {
+                        guard let self = self else { return }
+                        self.completionDelegate?.completionNotifyingDidComplete(self)
+                        self.dismiss(animated: true)
+                    }
+                }
+            }
+        )
+        return DismissibleHostingController(content: view, colorPalette: colorPalette)
     }
 }

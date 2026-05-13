@@ -17,7 +17,33 @@ public final class LibreLoopCGMManager: CGMManager {
 
     /// Live sensor monitor adopted after a successful pairing. nil before
     /// pairing or after the BLE session has dropped.
-    var monitor: LibreLoopSensorMonitor?
+    var monitor: LibreLoopSensorMonitor? {
+        didSet { notifyStateObservers() }
+    }
+
+    /// Current BLE connection state. Derived from monitor lifetime plus the
+    /// freshness of the latest reading (a connected monitor that's gone quiet
+    /// for too long is effectively "stalled").
+    public var connectionStatus: ConnectionStatus {
+        guard state.sensorSerial != nil else { return .notPaired }
+        guard monitor != nil else { return .disconnected }
+        if let last = state.latestReadingTimestamp,
+           Date().timeIntervalSince(last) > 6 * 60 {
+            return .stalled(since: last)
+        }
+        if let last = state.latestReadingTimestamp {
+            return .connected(lastDataAt: last)
+        }
+        return .connecting
+    }
+
+    public enum ConnectionStatus: Equatable {
+        case notPaired
+        case connecting
+        case connected(lastDataAt: Date)
+        case stalled(since: Date)
+        case disconnected
+    }
 
     /// Most recent glucose sample (in-memory only; not persisted across launches).
     public private(set) var latestSample: LibreLoopGlucoseSample?

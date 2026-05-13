@@ -113,6 +113,10 @@ xctest_ref.last_known_file_type = 'wrapper.framework'
 # ---------------------------------------------------------------------------
 # Helper: add a framework target with source files
 # ---------------------------------------------------------------------------
+def libreloop_group_or_main(proj, target)
+  proj.main_group.find_subpath(target.name, true) || proj.main_group
+end
+
 def add_framework_target(proj, name, sources_dir, settings_overrides, linked_refs)
   target = proj.new_target(:framework, name, :ios, '17.0')
   target.build_configurations.each do |cfg|
@@ -178,6 +182,30 @@ libreloop.package_product_dependencies << librecrkit_product
 librecrkit_build_file = proj.new(Xcodeproj::Project::Object::PBXBuildFile)
 librecrkit_build_file.product_ref = librecrkit_product
 libreloop.frameworks_build_phase.files << librecrkit_build_file
+
+# LibreCRKit ships a resource bundle (Resources/RuntimeTables → phone certs).
+# SwiftPM emits it as LibreCRKit_LibreCRKit.bundle in BUILT_PRODUCTS_DIR but
+# does NOT auto-embed it into a framework that statically links the package.
+# Without this, Bundle.module fatalErrors at first use ("unable to find bundle
+# named LibreCRKit_LibreCRKit"). Copy it into LibreLoop.framework so the
+# accessor finds it via Bundle(for: BundleFinder.self).resourceURL.
+librecrkit_bundle_ref = frameworks_group.new_reference('LibreCRKit_LibreCRKit.bundle')
+librecrkit_bundle_ref.source_tree = 'BUILT_PRODUCTS_DIR'
+librecrkit_bundle_ref.last_known_file_type = 'wrapper.cfbundle'
+librecrkit_bundle_ref.include_in_index = '0'
+libreloop.resources_build_phase.add_file_reference(librecrkit_bundle_ref)
+
+# Vendor phone_cert_162b.bin (MIT, from Apps/LibreCR/Sources/Resources). The
+# package-shipped phone_cert_firstpair.bin has documented live-sensor rejection.
+libreloop_resources_group = libreloop_group_or_main(proj, libreloop).new_group('Resources', 'Resources') rescue nil
+resources_dir = File.join(REPO_ROOT, 'LibreLoop', 'Resources')
+Dir.glob(File.join(resources_dir, '*.bin')).sort.each do |resource_path|
+  parent_group = proj.main_group.find_subpath('LibreLoop/Resources', true)
+  parent_group.set_source_tree('SOURCE_ROOT')
+  parent_group.path = 'LibreLoop/Resources'
+  res_ref = parent_group.new_reference(File.basename(resource_path))
+  libreloop.resources_build_phase.add_file_reference(res_ref)
+end
 
 # ---------------------------------------------------------------------------
 # Target: LibreLoopUI (UI framework — depends on LibreLoop, LoopKitUI)

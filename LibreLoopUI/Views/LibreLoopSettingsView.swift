@@ -37,6 +37,22 @@ struct LibreLoopSettingsView: View {
         Section("Sensor") {
             LibreLoopLifecycleBar(lifecycle: viewModel.lifecycle)
                 .padding(.vertical, 4)
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(connectionColor)
+                    .frame(width: 10, height: 10)
+                Text("Bluetooth")
+                Spacer()
+                Text(connectionLabel)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            if case .disconnected = viewModel.connectionStatus {
+                Button(viewModel.reconnecting ? "Reconnecting…" : "Reconnect now") {
+                    viewModel.reconnect()
+                }
+                .disabled(viewModel.reconnecting)
+            }
             if let serial = viewModel.sensorSerial {
                 LabeledContent("Serial", value: serial)
                     .monospaced()
@@ -45,6 +61,19 @@ struct LibreLoopSettingsView: View {
                 LabeledContent("Bluetooth", value: ble)
                     .monospaced()
                     .font(.footnote)
+                    .textSelection(.enabled)
+            }
+            if let pin = viewModel.blePINHex {
+                LabeledContent("BLE PIN", value: pin)
+                    .monospaced()
+                    .font(.footnote)
+                    .textSelection(.enabled)
+            }
+            if let rid = viewModel.receiverIDHex {
+                LabeledContent("Receiver ID", value: rid)
+                    .monospaced()
+                    .font(.footnote)
+                    .textSelection(.enabled)
             }
             if let activated = viewModel.activatedAt {
                 LabeledContent("Activated", value: activated.formatted(date: .abbreviated, time: .shortened))
@@ -111,6 +140,34 @@ struct LibreLoopSettingsView: View {
         }
     }
 
+    private var connectionColor: Color {
+        switch viewModel.connectionStatus {
+        case .connected:    return .green
+        case .connecting:   return .yellow
+        case .stalled:      return .orange
+        case .disconnected: return .red
+        case .notPaired:    return .gray
+        }
+    }
+
+    private var connectionLabel: String {
+        switch viewModel.connectionStatus {
+        case .notPaired:    return "Not paired"
+        case .connecting:   return "Connecting…"
+        case .connected(let last):
+            return "Last data \(Self.relative.localizedString(for: last, relativeTo: Date()))"
+        case .stalled(let since):
+            return "No data since \(Self.relative.localizedString(for: since, relativeTo: Date()))"
+        case .disconnected: return "Disconnected"
+        }
+    }
+
+    private static let relative: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f
+    }()
+
     private func trendSymbol(_ trend: LibreLoopGlucoseSample.Trend) -> String {
         switch trend {
         case .notDetermined:   return "minus"
@@ -165,20 +222,31 @@ final class LibreLoopSettingsViewModel: ObservableObject, LibreLoopStateObserver
     private let cgmManager: LibreLoopCGMManager
 
     @Published private(set) var lifecycle: LibreLoopSensorLifecycle
+    @Published private(set) var connectionStatus: LibreLoopCGMManager.ConnectionStatus
+    @Published private(set) var reconnecting: Bool = false
     @Published private(set) var latestSample: LibreLoopGlucoseSample?
     @Published private(set) var recentSamples: [LibreLoopGlucoseSample]
     @Published private(set) var sensorSerial: String?
     @Published private(set) var bleAddress: String?
+    @Published private(set) var blePINHex: String?
+    @Published private(set) var receiverIDHex: String?
     @Published private(set) var activatedAt: Date?
 
     init(cgmManager: LibreLoopCGMManager) {
         self.cgmManager = cgmManager
         self.lifecycle = cgmManager.sensorLifecycle
+        self.connectionStatus = cgmManager.connectionStatus
         self.latestSample = cgmManager.latestSample
         self.recentSamples = cgmManager.recentSamples
         self.sensorSerial = cgmManager.state.sensorSerial
         self.bleAddress = cgmManager.state.bleAddress
+        self.blePINHex = cgmManager.state.blePIN.map(Self.hex)
+        self.receiverIDHex = cgmManager.state.receiverID.map(Self.hex)
         self.activatedAt = cgmManager.state.activatedAt
+    }
+
+    private static func hex(_ data: Data) -> String {
+        data.map { String(format: "%02x", $0) }.joined()
     }
 
     func subscribe() {
@@ -189,15 +257,26 @@ final class LibreLoopSettingsViewModel: ObservableObject, LibreLoopStateObserver
         cgmManager.removeStateObserver(self)
     }
 
+    func reconnect() {
+        reconnecting = true
+        Task { [weak self] in
+            await self?.cgmManager.reconnectIfPossible()
+            await MainActor.run { self?.reconnecting = false }
+        }
+    }
+
     func libreLoopCGMManager(_ manager: LibreLoopCGMManager,
                               didUpdate state: LibreLoopCGMManagerState,
                               latestSample: LibreLoopGlucoseSample?) {
         DispatchQueue.main.async {
             self.lifecycle = manager.sensorLifecycle
+            self.connectionStatus = manager.connectionStatus
             self.latestSample = latestSample
             self.recentSamples = manager.recentSamples
             self.sensorSerial = state.sensorSerial
             self.bleAddress = state.bleAddress
+            self.blePINHex = state.blePIN.map(Self.hex)
+            self.receiverIDHex = state.receiverID.map(Self.hex)
             self.activatedAt = state.activatedAt
         }
     }

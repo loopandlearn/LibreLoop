@@ -1,5 +1,9 @@
 import Foundation
+import CoreBluetooth
 import LibreCRKit
+import os.log
+
+private let log = Logger(subsystem: "org.loopkit.LibreLoop", category: "Monitor")
 
 /// Wraps a live `SensorSession` after pairing has succeeded. Decrypts
 /// glucose-channel notifications using the session keys (`kEnc`/`ivEnc`)
@@ -13,6 +17,10 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
     public typealias DisconnectHandler = @Sendable () -> Void
 
     private let session: SensorSession
+    // Held strongly so the underlying CBCentralManager survives past pairing.
+    // SensorScanner owns the central manager + a [UUID: SensorSession] strong
+    // map; dropping it tears the BLE connection down.
+    private let scanner: SensorScanner
     private let decoder: DataPlaneDecoder
     private let assembler = DataPlaneNotificationAssembler()
     private let lock = NSLock()
@@ -21,7 +29,8 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
     private var readingHandler: ReadingHandler?
     private var disconnectHandler: DisconnectHandler?
 
-    init(session: SensorSession, kEnc: Data, ivEnc: Data) throws {
+    init(scanner: SensorScanner, session: SensorSession, kEnc: Data, ivEnc: Data) throws {
+        self.scanner = scanner
         self.session = session
         let crypto = try DataPlaneCrypto(kEnc: kEnc, ivEnc: ivEnc)
         self.decoder = DataPlaneDecoder(crypto: crypto)
@@ -43,10 +52,17 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
 
         let newTask = Task { [weak self] in
             guard let self else { return }
+            log.info("monitor starting; refreshing post-auth notifications")
+            await self.refreshPostAuthNotifications()
+            log.info("monitor consuming session.notifications()")
+            var eventCount = 0
             for await event in self.session.notifications() {
+                eventCount += 1
+                log.debug("notify #\(eventCount) char=\(event.characteristic.uuidString) len=\(event.fragment.count)")
                 self.handle(event)
                 if Task.isCancelled { break }
             }
+            log.warning("monitor notification stream ended after \(eventCount) events")
             self.lock.lock()
             let handler = self.disconnectHandler
             self.lock.unlock()
@@ -55,6 +71,34 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
         lock.lock()
         task = newTask
         lock.unlock()
+    }
+
+    /// After Phase 6 the sensor's data-plane characteristics need a CCCD
+    /// off→on cycle before the sensor will start streaming. Without this
+    /// the BLE session stays open but no glucose notifications arrive, and
+    /// eventually iOS or the sensor drops the link. Mirrors the upstream
+    /// PoC's `refreshFirstPairPostAuthNotifications`.
+    private func refreshPostAuthNotifications() async {
+        let chars: [(String, CBUUID)] = [
+            ("patchControl", LibreSensorGATT.Char.patchControl),
+            ("eventLog",     LibreSensorGATT.Char.eventLog),
+            ("factoryData",  LibreSensorGATT.Char.factoryData),
+            ("glucoseData",  LibreSensorGATT.Char.glucoseData),
+            ("patchStatus",  LibreSensorGATT.Char.patchStatus),
+        ]
+        for (name, uuid) in chars {
+            do {
+                log.info("CCCD \(name) off")
+                try await session.setNotify(false, for: uuid, timeout: 8)
+                try? await Task.sleep(nanoseconds: 90_000_000)
+                log.info("CCCD \(name) on")
+                try await session.setNotify(true, for: uuid, timeout: 8)
+                try? await Task.sleep(nanoseconds: 90_000_000)
+            } catch {
+                log.error("CCCD \(name) refresh failed: \(String(describing: error))")
+            }
+        }
+        log.info("CCCD refresh complete")
     }
 
     public func stop() {
@@ -66,24 +110,33 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
     }
 
     private func handle(_ event: NotifyEvent) {
-        guard let channel = DataPlaneChannel(uuidString: event.characteristic.uuidString) else { return }
-        guard let fullFrame = assembler.feed(fragment: event.fragment, channel: channel) else { return }
+        guard let channel = DataPlaneChannel(uuidString: event.characteristic.uuidString) else {
+            log.debug("notify on unmapped char \(event.characteristic.uuidString)")
+            return
+        }
+        guard let fullFrame = assembler.feed(fragment: event.fragment, channel: channel) else {
+            log.debug("\(channel.rawValue) partial fragment buffered, waiting for completion")
+            return
+        }
         do {
             let frame = try DataFrame.parse(fullFrame)
             let packet = try decoder.decrypt(frame: frame, channel: channel)
             switch packet.payload {
             case .realtimeGlucose(let reading):
                 if let sample = Self.makeSample(from: reading, receivedAt: event.receivedAt) {
+                    log.info("glucose \(Int(sample.valueMgDL)) mg/dL lifeCount=\(sample.lifeCount) trend=\(String(describing: sample.trend))")
                     lock.lock()
                     let handler = readingHandler
                     lock.unlock()
                     handler?(sample)
+                } else {
+                    log.info("glucose reading not actionable; skipped")
                 }
             default:
-                break
+                log.debug("\(channel.rawValue) packet kind=\(packet.kind.rawValue) (no sample)")
             }
         } catch {
-            // Swallow individual frame errors; one bad packet shouldn't kill the stream.
+            log.error("\(channel.rawValue) decode failed: \(String(describing: error))")
         }
     }
 
@@ -117,7 +170,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
 
 extension LibreLoopSensorMonitor {
     /// Internal builder used by `LibreLoopPairingService`.
-    static func make(session: SensorSession, kEnc: Data, ivEnc: Data) throws -> LibreLoopSensorMonitor {
-        try LibreLoopSensorMonitor(session: session, kEnc: kEnc, ivEnc: ivEnc)
+    static func make(scanner: SensorScanner, session: SensorSession, kEnc: Data, ivEnc: Data) throws -> LibreLoopSensorMonitor {
+        try LibreLoopSensorMonitor(scanner: scanner, session: session, kEnc: kEnc, ivEnc: ivEnc)
     }
 }

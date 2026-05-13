@@ -18,10 +18,12 @@ final class LibreLoopPairingViewModel: ObservableObject {
 
     private let cgmManager: LibreLoopCGMManager
     private let service = LibreLoopPairingService()
+    private let mode: LibreLoopPairingService.Mode
     private var pairingTask: Task<Void, Never>?
 
-    init(cgmManager: LibreLoopCGMManager) {
+    init(cgmManager: LibreLoopCGMManager, mode: LibreLoopPairingService.Mode = .fresh) {
         self.cgmManager = cgmManager
+        self.mode = mode
     }
 
     func start() {
@@ -39,16 +41,24 @@ final class LibreLoopPairingViewModel: ObservableObject {
 
     private func run() async {
         do {
-            let outcome = try await service.pairFreshSensor { stage in
-                Task { @MainActor in
-                    switch stage {
-                    case .nfcScanning: self.state = .nfcScanning
-                    case .bleSearching: self.state = .bleSearching
-                    case .bleConnecting: self.state = .bleConnecting
-                    case .handshaking: self.state = .handshaking
+            let outcome = try await service.pair(
+                mode: mode,
+                onNFCResponse: { [cgmManager] response in
+                    Task { @MainActor in
+                        cgmManager.applyNFCResponse(response)
+                    }
+                },
+                onStage: { stage in
+                    Task { @MainActor in
+                        switch stage {
+                        case .nfcScanning: self.state = .nfcScanning
+                        case .bleSearching: self.state = .bleSearching
+                        case .bleConnecting: self.state = .bleConnecting
+                        case .handshaking: self.state = .handshaking
+                        }
                     }
                 }
-            }
+            )
             try cgmManager.applyPairingOutcome(outcome)
             state = .succeeded(serial: outcome.result.sensorSerial)
         } catch {

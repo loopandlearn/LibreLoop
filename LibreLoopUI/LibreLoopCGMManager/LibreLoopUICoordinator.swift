@@ -45,9 +45,20 @@ final class LibreLoopUICoordinator: UINavigationController, CGMManagerOnboarding
 
     private func pushScanSensorView() {
         let view = LibreLoopScanSensorView(
-            onScan: { [weak self] in self?.startScan() },
+            onScan: { [weak self] in self?.startScan(mode: .fresh) },
             onShowHelp: { [weak self] in self?.presentScanHelp() },
-            onShowRecovery: { [weak self] in self?.showRecoveryPlaceholder() },
+            onShowRecovery: { [weak self] in self?.pushRecoveryView() },
+            onCancel: { [weak self] in self?.cancelOnboarding() }
+        )
+        let vc = DismissibleHostingController(content: view, colorPalette: colorPalette)
+        pushViewController(vc, animated: true)
+    }
+
+    private func pushRecoveryView() {
+        let view = LibreLoopRecoveryView(
+            onContinue: { [weak self] receiverID in
+                self?.startScan(mode: .recovery(receiverID: receiverID))
+            },
             onCancel: { [weak self] in self?.cancelOnboarding() }
         )
         let vc = DismissibleHostingController(content: view, colorPalette: colorPalette)
@@ -70,12 +81,12 @@ final class LibreLoopUICoordinator: UINavigationController, CGMManagerOnboarding
         present(host, animated: true)
     }
 
-    private func startScan() {
+    private func startScan(mode: LibreLoopPairingService.Mode) {
         // Create the manager up front so the pairing view model has something
         // to write into; if the user cancels we tear it back down.
         let manager = LibreLoopCGMManager()
         self.cgmManager = manager
-        let viewModel = LibreLoopPairingViewModel(cgmManager: manager)
+        let viewModel = LibreLoopPairingViewModel(cgmManager: manager, mode: mode)
         let view = LibreLoopPairingProgressView(
             viewModel: viewModel,
             onDone: { [weak self] in self?.completeSetupWithExistingManager() },
@@ -103,16 +114,6 @@ final class LibreLoopUICoordinator: UINavigationController, CGMManagerOnboarding
 
     private func retryPairing() {
         popViewController(animated: true)
-    }
-
-    private func showRecoveryPlaceholder() {
-        let alert = UIAlertController(
-            title: "Recovery",
-            message: "Recovery flow not yet implemented. Tap Start pairing for a fresh sensor.",
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
     }
 
     private func cancelOnboarding() {

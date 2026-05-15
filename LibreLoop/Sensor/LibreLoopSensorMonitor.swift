@@ -3,7 +3,6 @@ import CoreBluetooth
 import LibreCRKit
 import os.log
 
-private let log = Logger(subsystem: "org.loopkit.LibreLoop", category: "Monitor")
 
 /// Wraps a live `SensorSession` after pairing has succeeded. Decrypts
 /// glucose-channel notifications using the session keys (`kEnc`/`ivEnc`)
@@ -80,7 +79,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
 
         let newTask = Task { [weak self] in
             guard let self else { return }
-            log.info("monitor starting; refreshing post-auth notifications")
+            llog("monitor starting; refreshing post-auth notifications")
             self.emitStatus("Refreshing notifications")
             await self.refreshPostAuthNotifications()
             // Fire ready BEFORE consuming notifications so consumers (e.g.
@@ -91,16 +90,16 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
             let ready = self.readyHandler
             self.lock.unlock()
             ready?()
-            log.info("monitor consuming session.notifications()")
+            llog("monitor consuming session.notifications()")
             self.emitStatus("Waiting for first reading")
             var eventCount = 0
             for await event in self.session.notifications() {
                 eventCount += 1
-                log.debug("notify #\(eventCount) char=\(event.characteristic.uuidString) len=\(event.fragment.count)")
+                llog("notify #\(eventCount) char=\(event.characteristic.uuidString) len=\(event.fragment.count)")
                 self.handle(event)
                 if Task.isCancelled { break }
             }
-            log.warning("monitor notification stream ended after \(eventCount) events")
+            llog("monitor notification stream ended after \(eventCount) events; invoking disconnect handler")
             self.lock.lock()
             let handler = self.disconnectHandler
             self.lock.unlock()
@@ -121,11 +120,11 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
     /// previously implemented this inline.
     private func refreshPostAuthNotifications() async {
         do {
-            log.info("CCCD refresh starting")
+            llog("CCCD refresh starting")
             try await session.refreshDataPlaneNotifications()
-            log.info("CCCD refresh complete")
+            llog("CCCD refresh complete")
         } catch {
-            log.error("CCCD refresh failed: \(String(describing: error))")
+            llog("CCCD refresh failed: \(String(describing: error))")
         }
     }
 
@@ -140,9 +139,9 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
         // first or the writes go through but the pages never reach us.
         do {
             try await session.setNotify(true, for: LibreSensorGATT.Char.historicData, timeout: 5)
-            log.info("historicData notifications enabled for backfill")
+            llog("historicData notifications enabled for backfill")
         } catch {
-            log.error("failed to enable historicData notifications: \(String(describing: error))")
+            llog("failed to enable historicData notifications: \(String(describing: error))")
         }
 
         let command = PatchControlCommand.historicalBackfillGreaterEqual(lifeCount: fromLifeCount)
@@ -155,7 +154,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
             sequence: sequence,
             kind: .patchControlWrite
         )
-        log.notice("backfill request seq=\(sequence) >= lifeCount \(fromLifeCount)")
+        llog("backfill request seq=\(sequence) >= lifeCount \(fromLifeCount)")
         try await session.writeRaw(
             frame.raw,
             to: LibreSensorGATT.Char.patchControl,
@@ -173,11 +172,11 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
 
     private func handle(_ event: NotifyEvent) {
         guard let channel = DataPlaneChannel(uuidString: event.characteristic.uuidString) else {
-            log.debug("notify on unmapped char \(event.characteristic.uuidString)")
+            llog("notify on unmapped char \(event.characteristic.uuidString)")
             return
         }
         guard let fullFrame = assembler.feed(fragment: event.fragment, channel: channel) else {
-            log.debug("\(channel.rawValue) partial fragment buffered, waiting for completion")
+            llog("\(channel.rawValue) partial fragment buffered, waiting for completion")
             return
         }
         do {
@@ -185,7 +184,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
             let packet = try decoder.decrypt(frame: frame, channel: channel)
             switch packet.payload {
             case .historicalReadingPage(let page):
-                log.notice("historical page startLC=\(page.startLifeCount) endLC=\(page.endLifeCount) samples=\(page.samples.count)")
+                llog("historical page startLC=\(page.startLifeCount) endLC=\(page.endLifeCount) samples=\(page.samples.count)")
                 lock.lock()
                 let handler = historicalPageHandler
                 lock.unlock()
@@ -197,10 +196,10 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
                 let lifecycle = SensorLifecycle(currentLifeCountMinutes: Int(reading.lifeCount))
                 let assessment = reading.currentGlucoseQualityAssessment(lifecycle: lifecycle)
                 if assessment.issues.isEmpty {
-                    log.info("glucose mgdl=\(reading.currentGlucoseMgDL.map(String.init) ?? "nil") lifeCount=\(reading.lifeCount) trend=\(String(describing: reading.trendKind))")
+                    llog("glucose mgdl=\(reading.currentGlucoseMgDL.map(String.init) ?? "nil") lifeCount=\(reading.lifeCount) trend=\(String(describing: reading.trendKind))")
                 } else {
                     let issueText = assessment.issues.map { String(describing: $0) }.joined(separator: ", ")
-                    log.info("glucose mgdl=\(reading.currentGlucoseMgDL.map(String.init) ?? "nil") lifeCount=\(reading.lifeCount) issues=[\(issueText)]")
+                    llog("glucose mgdl=\(reading.currentGlucoseMgDL.map(String.init) ?? "nil") lifeCount=\(reading.lifeCount) issues=[\(issueText)]")
                 }
                 if let sample = Self.makeSample(from: reading, assessment: assessment, receivedAt: event.receivedAt) {
                     lock.lock()
@@ -209,10 +208,10 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
                     handler?(sample)
                 }
             default:
-                log.debug("\(channel.rawValue) packet kind=\(packet.kind.rawValue) (no sample)")
+                llog("\(channel.rawValue) packet kind=\(packet.kind.rawValue) (no sample)")
             }
         } catch {
-            log.error("\(channel.rawValue) decode failed: \(String(describing: error))")
+            llog("\(channel.rawValue) decode failed: \(String(describing: error))")
         }
     }
 

@@ -3,8 +3,8 @@ import HealthKit
 import LibreCRKit
 import LoopKit
 import os.log
+import UIKit
 
-private let log = Logger(subsystem: "org.loopkit.LibreLoop", category: "CGMManager")
 
 public final class LibreLoopCGMManager: CGMManager {
     public static let pluginIdentifier = "LibreLoopCGMManager"
@@ -241,7 +241,7 @@ public final class LibreLoopCGMManager: CGMManager {
         // after a few hours of failures.
         if let id = state.peripheralID {
             scanner.registerForConnectionEvents(peripheralIDs: [id])
-            log.notice("registered for connection events on peripheral \(id.uuidString)")
+            llog("registered for connection events on peripheral \(id.uuidString)")
         }
         startConnectionEventListener(on: scanner)
     }
@@ -253,7 +253,7 @@ public final class LibreLoopCGMManager: CGMManager {
         connectionEventTask = Task { [weak self] in
             for await event in scanner.connectionEvents() {
                 guard let self else { return }
-                log.notice("connection event: \(String(describing: event.event)) peripheral=\(event.peripheral.identifier.uuidString)")
+                llog("connection event: \(String(describing: event.event)) peripheral=\(event.peripheral.identifier.uuidString)")
                 if event.peripheral.identifier == self.state.peripheralID {
                     await MainActor.run {
                         // Any event for our peripheral is a hint to attempt
@@ -267,16 +267,16 @@ public final class LibreLoopCGMManager: CGMManager {
     }
 
     private func handleRestorationEvent(_ event: SensorRestorationEvent) {
-        log.notice("BLE restoration event: \(event.peripherals.count) peripheral(s)")
+        llog("BLE restoration event: \(event.peripherals.count) peripheral(s)")
         guard let expected = state.peripheralID else {
-            log.notice("BLE restoration: no saved peripheralID, ignoring")
+            llog("BLE restoration: no saved peripheralID, ignoring")
             return
         }
         guard let restored = event.peripherals.first(where: { $0.identifier == expected }) else {
-            log.notice("BLE restoration: saved peripheral not in restored set")
+            llog("BLE restoration: saved peripheral not in restored set")
             return
         }
-        log.notice("BLE restoration: matched \(restored.identifier.uuidString); scheduling reconnect")
+        llog("BLE restoration: matched \(restored.identifier.uuidString); scheduling reconnect")
         // We have a CBPeripheral handle from iOS that may already be
         // connected. Easiest path: drop into the same reconnect loop --
         // it'll see the peripheral via scan (or CB short-circuit because
@@ -286,6 +286,25 @@ public final class LibreLoopCGMManager: CGMManager {
 
     public init() {
         self.state = LibreLoopCGMManagerState()
+        observeAppLifecycle()
+    }
+
+    private func observeAppLifecycle() {
+        let nc = NotificationCenter.default
+        let names: [(Notification.Name, String)] = [
+            (UIApplication.willResignActiveNotification, "willResignActive"),
+            (UIApplication.didEnterBackgroundNotification, "didEnterBackground"),
+            (UIApplication.willEnterForegroundNotification, "willEnterForeground"),
+            (UIApplication.didBecomeActiveNotification, "didBecomeActive"),
+            (UIApplication.protectedDataWillBecomeUnavailableNotification, "protectedDataWillBecomeUnavailable"),
+            (UIApplication.protectedDataDidBecomeAvailableNotification, "protectedDataDidBecomeAvailable"),
+        ]
+        for (name, label) in names {
+            nc.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+                guard let self else { return }
+                llog("app lifecycle: \(label) (monitor=\(self.monitor != nil ? "alive" : "nil"), reconnecting=\(self.isReconnecting), latestReading=\(self.state.latestReadingTimestamp.map { Int(Date().timeIntervalSince($0)) }.map { "\($0)s ago" } ?? "never"))")
+            }
+        }
     }
 
     deinit {

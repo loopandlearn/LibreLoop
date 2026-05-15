@@ -5,7 +5,6 @@ import LoopAlgorithm
 import LoopKit
 import os.log
 
-private let log = Logger(subsystem: "org.loopkit.LibreLoop", category: "CGMManager")
 
 extension LibreLoopCGMManager {
     /// Saves the NFC half of pairing the instant it completes successfully,
@@ -14,7 +13,7 @@ extension LibreLoopCGMManager {
     /// the new PIN MUST be persisted before we touch BLE -- a crash or
     /// handshake failure must not leave the sensor stranded.
     public func applyNFCResponse(_ response: LibreLoopPairingService.NFCResponse) {
-        log.info("NFC response applied: serial=\(response.sensorSerial) bleAddress=\(response.bleAddress ?? "nil") blePIN bytes=\(response.blePIN.count)")
+        llog("NFC response applied: serial=\(response.sensorSerial) bleAddress=\(response.bleAddress ?? "nil") blePIN bytes=\(response.blePIN.count)")
         cancelReconnect()
         var newState = state
         newState.receiverID = withUnsafeBytes(of: response.receiverID.littleEndian) { Data($0) }
@@ -29,7 +28,7 @@ extension LibreLoopCGMManager {
     /// to Keychain and adopts the live monitor. NFC fields are already in
     /// state by this point (see applyNFCResponse).
     public func applyPairingOutcome(_ outcome: LibreLoopPairingService.PairOutcome) throws {
-        log.info("pairing outcome applied: serial=\(outcome.result.sensorSerial) peripheral=\(outcome.peripheralID.uuidString); adopting monitor")
+        llog("pairing outcome applied: serial=\(outcome.result.sensorSerial) peripheral=\(outcome.peripheralID.uuidString); adopting monitor")
         try LibreLoopKeychain.save(
             LibreLoopKeychain.SessionKeys(kEnc: outcome.result.kEnc, ivEnc: outcome.result.ivEnc),
             forSensorSerial: outcome.result.sensorSerial
@@ -95,7 +94,7 @@ extension LibreLoopCGMManager {
                 try await monitor.requestHistoricalBackfill(fromLifeCount: from)
             } catch {
                 guard let self else { return }
-                log.error("backfill request failed: \(String(describing: error))")
+                llog("backfill request failed: \(String(describing: error))")
                 self.hasRequestedBackfillThisSession = false   // retry on next reading
             }
         }
@@ -132,7 +131,7 @@ extension LibreLoopCGMManager {
         // any reading arrives, even unactionable ones -- the link is proven.
         if !sample.isActionable {
             updateStatusDetail("Reading received (not actionable)")
-            log.info("ingested non-actionable sample (\(Int(sample.valueMgDL)) mg/dL); not forwarding to Loop")
+            llog("ingested non-actionable sample (\(Int(sample.valueMgDL)) mg/dL); not forwarding to Loop")
             return
         }
         updateStatusDetail(nil)
@@ -174,7 +173,7 @@ extension LibreLoopCGMManager {
     /// up where we left off.
     func handleHistoricalPage(_ page: HistoricalReadingPage) {
         guard let activatedAt = state.activatedAt else {
-            log.info("backfill page received before activatedAt known; deferring")
+            llog("backfill page received before activatedAt known; deferring")
             return
         }
         let serial = state.sensorSerial ?? "unknown"
@@ -200,7 +199,7 @@ extension LibreLoopCGMManager {
                 guard let self else { return }
                 self.cgmManagerDelegate?.cgmManager(self, hasNew: .newData(newSamples))
             }
-            log.info("forwarded \(newSamples.count) backfill sample(s) to Loop")
+            llog("forwarded \(newSamples.count) backfill sample(s) to Loop")
         }
         // Advance the watermark to the page's end, even if no usable samples
         // -- skipping unusable samples shouldn't cause us to re-request them.
@@ -213,7 +212,7 @@ extension LibreLoopCGMManager {
     }
 
     private func handleMonitorDisconnect() {
-        log.notice("monitor reported disconnect; clearing and reconnecting")
+        llog("monitor reported disconnect; clearing and reconnecting")
         self.monitor = nil
         self.hasRequestedBackfillThisSession = false
         cancelReconnect()
@@ -226,16 +225,16 @@ extension LibreLoopCGMManager {
     /// torn down). The user never has to push a button.
     private func startReconnectLoop() {
         let task = Task { [weak self] in
-            log.notice("reconnect loop: starting")
+            llog("reconnect loop: starting")
             defer {
                 Task { @MainActor [weak self] in self?.isReconnecting = false }
-                log.notice("reconnect loop: exiting")
+                llog("reconnect loop: exiting")
             }
             while !Task.isCancelled {
                 guard let self else { return }
                 guard self.monitor == nil else { return }
                 guard self.state.blePIN != nil, self.state.sensorSerial != nil else {
-                    log.error("reconnect loop: no saved state; aborting")
+                    llog("reconnect loop: no saved state; aborting")
                     return
                 }
                 await MainActor.run { self.isReconnecting = true }
@@ -262,7 +261,7 @@ extension LibreLoopCGMManager {
             return
         }
         let expectedPeripheral = state.peripheralID
-        log.notice("reconnect: attempt starting (peripheralID=\(expectedPeripheral?.uuidString ?? "any"))")
+        llog("reconnect: attempt starting (peripheralID=\(expectedPeripheral?.uuidString ?? "any"))")
         await MainActor.run {
             self.lastReconnectAttemptAt = Date()
         }
@@ -272,7 +271,7 @@ extension LibreLoopCGMManager {
                 blePIN: blePIN,
                 expectedPeripheralID: expectedPeripheral
             ) { [weak self] stage in
-                log.info("reconnect stage: \(String(describing: stage))")
+                llog("reconnect stage: \(String(describing: stage))")
                 self?.updateStatusDetail(Self.statusText(for: stage))
             }
             try LibreLoopKeychain.save(
@@ -283,11 +282,11 @@ extension LibreLoopCGMManager {
                 self.lastReconnectError = nil
                 self.adopt(monitor: outcome.monitor)
             }
-            log.notice("reconnect: succeeded")
+            llog("reconnect: succeeded")
         } catch {
             let message = (error as? CustomStringConvertible)?.description
                 ?? error.localizedDescription
-            log.error("reconnect: attempt failed: \(message)")
+            llog("reconnect: attempt failed: \(message)")
             await MainActor.run {
                 self.lastReconnectError = message
             }
@@ -300,13 +299,13 @@ extension LibreLoopCGMManager {
     func scheduleInitialReconnect() {
         let key = ObjectIdentifier(self)
         guard Self.reconnectTasks[key] == nil else {
-            log.notice("reconnect: auto-trigger skipped (loop already running)")
+            llog("reconnect: auto-trigger skipped (loop already running)")
             return
         }
         guard monitor == nil else {
             return
         }
-        log.notice("reconnect: auto-trigger (launch or poll)")
+        llog("reconnect: auto-trigger (launch or poll)")
         startReconnectLoop()
     }
 

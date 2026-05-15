@@ -1,6 +1,7 @@
 import Foundation
 import HealthKit
 import LibreCRKit
+import LoopAlgorithm
 import LoopKit
 import os.log
 
@@ -138,11 +139,11 @@ extension LibreLoopCGMManager {
 
         let newSample = NewGlucoseSample(
             date: sample.date,
-            quantity: HKQuantity(unit: .milligramsPerDeciliter, doubleValue: sample.valueMgDL),
+            quantity: LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: sample.valueMgDL),
             condition: nil,
             trend: Self.mapTrend(sample.trend),
             trendRate: sample.rateOfChangeMgDLPerMinute.map {
-                HKQuantity(unit: .milligramsPerDeciliterPerMinute, doubleValue: $0)
+                LoopQuantity(unit: .milligramsPerDeciliterPerMinute, doubleValue: $0)
             },
             isDisplayOnly: false,
             wasUserEntered: false,
@@ -183,7 +184,7 @@ extension LibreLoopCGMManager {
             let date = activatedAt.addingTimeInterval(TimeInterval(sample.lifeCount) * 60)
             newSamples.append(NewGlucoseSample(
                 date: date,
-                quantity: HKQuantity(unit: .milligramsPerDeciliter, doubleValue: Double(mgdl)),
+                quantity: LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: Double(mgdl)),
                 condition: nil,
                 trend: nil,
                 trendRate: nil,

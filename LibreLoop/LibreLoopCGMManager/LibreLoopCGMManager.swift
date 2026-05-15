@@ -13,6 +13,11 @@ public final class LibreLoopCGMManager: CGMManager {
 
     public var localizedTitle: String { Self.localizedTitle }
 
+    // Pluggable in tidepool-sync's LoopKit dropped the static pluginIdentifier
+    // in favor of an instance var, and added markAsDepedency.
+    public var pluginIdentifier: String { Self.pluginIdentifier }
+    public func markAsDepedency(_ isDependency: Bool) {}
+
     public weak var cgmManagerDelegate: CGMManagerDelegate?
     public var delegateQueue: DispatchQueue!
 
@@ -163,6 +168,14 @@ public final class LibreLoopCGMManager: CGMManager {
     public var shouldSyncToRemoteService: Bool { true }
     public var managedDataInterval: TimeInterval? { nil }
     public var glucoseDisplay: GlucoseDisplayable? { nil }
+
+    // DeviceManager (tidepool-sync) surface for "the device is reachable
+    // but we're not getting data right now" vs "the device is broken".
+    public var inSignalLoss: Bool {
+        guard state.sensorSerial != nil else { return false }
+        return monitor == nil
+    }
+    public var isInoperable: Bool { false }
 
     public var cgmManagerStatus: CGMManagerStatus {
         CGMManagerStatus(hasValidSensorSession: state.sensorSerial != nil,
@@ -362,10 +375,11 @@ public final class LibreLoopCGMManager: CGMManager {
         completion(.noData)
     }
 
-    public func acknowledgeAlert(alertIdentifier: Alert.AlertIdentifier, completion: @escaping (Error?) -> Void) {
-        completion(nil)
-    }
+    // AlertResponder. Tidepool-sync's LoopKit replaced the completion-handler
+    // signature with async/throws.
+    public func acknowledgeAlert(alertIdentifier: Alert.AlertIdentifier) async throws {}
 
+    // AlertSoundVendor.
     public func getSoundBaseURL() -> URL? { nil }
     public func getSounds() -> [Alert.Sound] { [] }
 

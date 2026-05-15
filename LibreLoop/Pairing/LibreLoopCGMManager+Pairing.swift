@@ -4,6 +4,7 @@ import LibreCRKit
 import LoopAlgorithm
 import LoopKit
 import os.log
+import UIKit
 
 
 extension LibreLoopCGMManager {
@@ -169,6 +170,48 @@ extension LibreLoopCGMManager {
 
     private static var reconnectTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
 
+    /// Wraps `work` in a UIApplication background task so iOS keeps us alive
+    /// long enough to finish even when the app is backgrounded. We always end
+    /// the task — either when `work` returns, or in the expiration handler if
+    /// iOS pulls the rug out at ~30s. Failure to end leads to a force-quit.
+    static func withBackgroundTask<T: Sendable>(name: String, _ work: @Sendable @escaping () async -> T) async -> T {
+        let app = await MainActor.run { UIApplication.shared }
+        let idBox = TaskIdentifierBox()
+        let id = await MainActor.run {
+            app.beginBackgroundTask(withName: name) {
+                let taskID = idBox.value
+                if taskID != .invalid {
+                    llog("background task '\(name)' expired before work completed")
+                    app.endBackgroundTask(taskID)
+                    idBox.value = .invalid
+                }
+            }
+        }
+        idBox.value = id
+        if id == .invalid {
+            llog("background task '\(name)' could not be started (app may be unable to extend runtime)")
+        } else {
+            llog("background task '\(name)' started id=\(id.rawValue)")
+        }
+        let result = await work()
+        await MainActor.run {
+            let taskID = idBox.value
+            if taskID != .invalid {
+                app.endBackgroundTask(taskID)
+                idBox.value = .invalid
+                llog("background task '\(name)' ended id=\(taskID.rawValue)")
+            }
+        }
+        return result
+    }
+
+    /// Reference container so the expiration handler and the post-work cleanup
+    /// can race safely on the same identifier without forcing us into a
+    /// @MainActor closure capture.
+    private final class TaskIdentifierBox: @unchecked Sendable {
+        var value: UIBackgroundTaskIdentifier = .invalid
+    }
+
     /// Convert each historical sample into a NewGlucoseSample (when the page
     /// decoded mg/dL is present), push the batch to Loop's delegate, and
     /// advance `state.lastHistoricalLifeCount` so the next backfill picks
@@ -245,7 +288,14 @@ extension LibreLoopCGMManager {
                 await MainActor.run { self.isReconnecting = true }
                 try? await Task.sleep(nanoseconds: UInt64(Self.reconnectDelay * 1_000_000_000))
                 if Task.isCancelled { break }
-                await self.runReconnectOnce()
+                // Bracket the reconnect with a UIApplication background task so
+                // iOS gives us the ~30s window needed to finish a BLE handshake
+                // when this loop fires while the app is backgrounded. Without
+                // this we get suspended mid-handshake and the await chain parks
+                // indefinitely (verified in the 18:31→18:47 hang in field logs).
+                await Self.withBackgroundTask(name: "LibreLoop.reconnect") {
+                    await self.runReconnectOnce()
+                }
                 if self.monitor != nil { return }
                 // failure -> loop back, sleep, retry. Never gives up.
             }

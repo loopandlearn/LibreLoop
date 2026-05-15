@@ -151,6 +151,8 @@ extension LibreLoopCGMManager {
             device: device
         )
 
+        llog("forwarding to Loop: \(Int(sample.valueMgDL)) mg/dL lifeCount=\(sample.lifeCount) sampleDate=\(sample.date.timeIntervalSince1970)")
+
         delegateQueue?.async { [weak self] in
             guard let self else { return }
             self.cgmManagerDelegate?.cgmManager(self, hasNew: .newData([newSample]))
@@ -199,7 +201,10 @@ extension LibreLoopCGMManager {
                 guard let self else { return }
                 self.cgmManagerDelegate?.cgmManager(self, hasNew: .newData(newSamples))
             }
-            llog("forwarded \(newSamples.count) backfill sample(s) to Loop")
+            let firstDate = newSamples.first?.date.timeIntervalSince1970 ?? 0
+            let lastDate = newSamples.last?.date.timeIntervalSince1970 ?? 0
+            let values = newSamples.map { Int($0.quantity.doubleValue(for: .milligramsPerDeciliter)) }
+            llog("forwarded \(newSamples.count) backfill samples to Loop: lifeCount \(page.startLifeCount)..\(page.endLifeCount), dates \(firstDate)..\(lastDate), mgdl=\(values)")
         }
         // Advance the watermark to the page's end, even if no usable samples
         // -- skipping unusable samples shouldn't cause us to re-request them.

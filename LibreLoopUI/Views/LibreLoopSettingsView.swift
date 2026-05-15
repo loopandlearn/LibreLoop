@@ -149,6 +149,7 @@ struct LibreLoopSettingsView: View {
     private var recentReadingsSection: some View {
         if !viewModel.recentSamples.isEmpty {
             Section("Recent Readings") {
+                LibreLoopReadingHeaderRow()
                 let visible = showingAllReadings ? viewModel.recentSamples : Array(viewModel.recentSamples.prefix(8))
                 ForEach(visible.indices, id: \.self) { idx in
                     LibreLoopReadingRow(sample: visible[idx])
@@ -219,6 +220,23 @@ struct LibreLoopSettingsView: View {
         case .falling:         return "arrow.down.right"
         case .fallingQuickly:  return "arrow.down"
         }
+    }
+}
+
+struct LibreLoopReadingHeaderRow: View {
+    var body: some View {
+        HStack {
+            Text("Time")
+                .frame(width: 72, alignment: .leading)
+            Text("mg/dL")
+                .frame(width: 48, alignment: .trailing)
+            Text("mg/dL/min")
+                .frame(width: 56, alignment: .trailing)
+            Spacer()
+            Text("Trend")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 }
 

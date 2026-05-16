@@ -41,6 +41,15 @@ public struct LibreLoopCGMManagerState: RawRepresentable, Equatable {
     /// settings table without bloating rawState.
     public var recentSamples: [LibreLoopGlucoseSample] = []
     public static let recentSamplesPersistenceCap = 12
+    /// Wall-clock timestamp of the most recent realtime sample we actually
+    /// forwarded to Loop (not merely received from the sensor). Used by the
+    /// default ≥4.5-minute throttle so we don't disturb Loop's 5-minute
+    /// dosing cadence with per-minute updates.
+    public var latestForwardedToLoopAt: Date?
+    /// Opt-in escape hatch from the ≥4.5-minute forward throttle. Off by
+    /// default — flipping it on requires reading a warning sheet that
+    /// explains the dosing-cadence implications first.
+    public var experimentalMinuteByMinuteForwarding: Bool = false
 
     public init() {}
 
@@ -61,6 +70,8 @@ public struct LibreLoopCGMManagerState: RawRepresentable, Equatable {
         if let recentRaw = rawValue["recentSamples"] as? [[String: Any]] {
             self.recentSamples = recentRaw.compactMap(LibreLoopGlucoseSample.init(rawValue:))
         }
+        self.latestForwardedToLoopAt = rawValue["latestForwardedToLoopAt"] as? Date
+        self.experimentalMinuteByMinuteForwarding = rawValue["experimentalMinuteByMinuteForwarding"] as? Bool ?? false
     }
 
     public var rawValue: RawValue {
@@ -78,6 +89,10 @@ public struct LibreLoopCGMManagerState: RawRepresentable, Equatable {
         raw["latestSample"] = latestSample?.rawValue
         if !recentSamples.isEmpty {
             raw["recentSamples"] = recentSamples.prefix(Self.recentSamplesPersistenceCap).map { $0.rawValue }
+        }
+        raw["latestForwardedToLoopAt"] = latestForwardedToLoopAt
+        if experimentalMinuteByMinuteForwarding {
+            raw["experimentalMinuteByMinuteForwarding"] = true
         }
         return raw
     }

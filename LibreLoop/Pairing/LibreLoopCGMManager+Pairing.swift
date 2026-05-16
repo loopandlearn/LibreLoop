@@ -145,6 +145,21 @@ extension LibreLoopCGMManager {
         }
         updateStatusDetail(nil)
 
+        // Default-mode throttle: Loop's algorithm is paced around the
+        // 5-minute CGM cadence other plugins emit, and per-minute updates
+        // can shift dosing decisions in ways the cadence wasn't tuned for.
+        // Only forward when at least 4.5 minutes (a 30-second slop under
+        // 5 min, so the natural 5-min wall-clock cadence isn't blocked by
+        // jitter) have passed since the last forwarded sample. Opt-out is
+        // experimentalMinuteByMinuteForwarding, gated behind a warning UI.
+        if !state.experimentalMinuteByMinuteForwarding,
+           let last = state.latestForwardedToLoopAt,
+           sample.date.timeIntervalSince(last) < 270 {
+            let age = Int(sample.date.timeIntervalSince(last))
+            llog("throttled: \(Int(sample.valueMgDL)) mg/dL lifeCount=\(sample.lifeCount) (only \(age)s since last forward; experimental minute-by-minute mode is off)")
+            return
+        }
+
         let newSample = NewGlucoseSample(
             date: sample.date,
             quantity: LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: sample.valueMgDL),
@@ -161,6 +176,9 @@ extension LibreLoopCGMManager {
         )
 
         llog("forwarding to Loop: \(Int(sample.valueMgDL)) mg/dL lifeCount=\(sample.lifeCount) sampleDate=\(sample.date.timeIntervalSince1970)")
+        var stamped = state
+        stamped.latestForwardedToLoopAt = sample.date
+        setState(stamped)
 
         delegateQueue?.async { [weak self] in
             guard let self else { return }

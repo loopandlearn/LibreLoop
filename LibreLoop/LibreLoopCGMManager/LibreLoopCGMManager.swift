@@ -161,6 +161,15 @@ public final class LibreLoopCGMManager: CGMManager {
         setState(blank)
     }
 
+    /// Toggle the experimental minute-by-minute forwarding mode. UI must
+    /// only call this with `enabled: true` after the user has acknowledged
+    /// the dosing-cadence warning sheet — see LibreLoopUI.
+    public func setExperimentalMinuteByMinuteForwarding(_ enabled: Bool) {
+        var updated = state
+        updated.experimentalMinuteByMinuteForwarding = enabled
+        setState(updated)
+    }
+
     public let isOnboarded = true
 
     public var appURL: URL? { nil }

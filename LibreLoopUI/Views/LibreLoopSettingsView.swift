@@ -10,12 +10,14 @@ struct LibreLoopSettingsView: View {
     @State private var confirmingDelete = false
     @State private var confirmingReplace = false
     @State private var showingAllReadings = false
+    @State private var showingMinuteByMinuteWarning = false
 
     var body: some View {
         List {
             sensorSection
             lastReadingSection
             recentReadingsSection
+            forwardingSection
             deleteSection
         }
         .navigationTitle("FreeStyle Libre 3")
@@ -174,6 +176,39 @@ struct LibreLoopSettingsView: View {
         }
     }
 
+    /// Toggle for the per-minute experimental forwarding mode. Default is
+    /// off (samples throttled to ~5 min) because Loop's dosing cadence was
+    /// designed against 5-min CGM input. Turning it on requires the user
+    /// to read the warning sheet.
+    private var forwardingSection: some View {
+        Section("Forwarding to Loop") {
+            Toggle("Send every reading (experimental)", isOn: Binding(
+                get: { viewModel.minuteByMinuteForwardingEnabled },
+                set: { newValue in
+                    if newValue {
+                        showingMinuteByMinuteWarning = true
+                    } else {
+                        viewModel.setMinuteByMinuteForwarding(false)
+                    }
+                }
+            ))
+            Text(viewModel.minuteByMinuteForwardingEnabled
+                 ? "Every realtime reading (~1/min) is sent to Loop."
+                 : "Only one reading every ~5 minutes is sent to Loop, matching the cadence other CGMs use.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .sheet(isPresented: $showingMinuteByMinuteWarning) {
+            MinuteByMinuteWarningSheet(
+                onEnable: {
+                    viewModel.setMinuteByMinuteForwarding(true)
+                    showingMinuteByMinuteWarning = false
+                },
+                onCancel: { showingMinuteByMinuteWarning = false }
+            )
+        }
+    }
+
     /// Only worth showing reconnect-error context when we're not currently
     /// connected -- a successful session clears the error but we keep the
     /// last value around for diagnostics; hiding it when green avoids stale
@@ -285,6 +320,46 @@ struct LibreLoopReadingRow: View {
     }
 }
 
+struct MinuteByMinuteWarningSheet: View {
+    let onEnable: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Label("Experimental setting", systemImage: "exclamationmark.triangle.fill")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.orange)
+
+                    Text("Loop's algorithm was designed and tuned against CGMs that emit a new reading every 5 minutes. With this setting on, Loop receives a new reading from the FreeStyle Libre 3 every minute instead.")
+                    Text("This can change how Loop reacts to glucose movement compared to default behavior:")
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("• Dosing decisions may shift sooner or further than what Loop's review and tuning guidance assumes.")
+                        Text("• Trend math, retrospective correction, and momentum effects were validated at the 5-minute cadence.")
+                        Text("• You're accepting responsibility for monitoring outcomes more closely while this is on.")
+                    }
+                    .font(.callout)
+                    Text("Leave this off unless you understand the implications. You can turn it off again at any time.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+            }
+            .navigationTitle("Send every reading")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onCancel)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Enable", role: .destructive, action: onEnable)
+                }
+            }
+        }
+    }
+}
+
 final class LibreLoopSettingsViewModel: ObservableObject, LibreLoopStateObserver {
     private let cgmManager: LibreLoopCGMManager
 
@@ -300,6 +375,7 @@ final class LibreLoopSettingsViewModel: ObservableObject, LibreLoopStateObserver
     @Published private(set) var blePINHex: String?
     @Published private(set) var receiverIDHex: String?
     @Published private(set) var activatedAt: Date?
+    @Published private(set) var minuteByMinuteForwardingEnabled: Bool
 
     init(cgmManager: LibreLoopCGMManager) {
         self.cgmManager = cgmManager
@@ -315,6 +391,11 @@ final class LibreLoopSettingsViewModel: ObservableObject, LibreLoopStateObserver
         self.blePINHex = cgmManager.state.blePIN.map(Self.hex)
         self.receiverIDHex = cgmManager.state.receiverID.map(Self.hex)
         self.activatedAt = cgmManager.state.activatedAt
+        self.minuteByMinuteForwardingEnabled = cgmManager.state.experimentalMinuteByMinuteForwarding
+    }
+
+    func setMinuteByMinuteForwarding(_ enabled: Bool) {
+        cgmManager.setExperimentalMinuteByMinuteForwarding(enabled)
     }
 
     private static func hex(_ data: Data) -> String {
@@ -351,6 +432,7 @@ final class LibreLoopSettingsViewModel: ObservableObject, LibreLoopStateObserver
             self.blePINHex = state.blePIN.map(Self.hex)
             self.receiverIDHex = state.receiverID.map(Self.hex)
             self.activatedAt = state.activatedAt
+            self.minuteByMinuteForwardingEnabled = state.experimentalMinuteByMinuteForwarding
         }
     }
 }

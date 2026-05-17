@@ -142,7 +142,7 @@ public final class LibreLoopPairingService {
         // below -- upstream's guidance is "if it is rejected before Phase 6,
         // fall back to the full authorization path".
         if let phase5RawKey {
-            let cachedFlow = PairingFlow(transport: transport, eventLogger: nil)
+            let cachedFlow = PairingFlow(transport: transport, eventLogger: { message in llog(message) })
             do {
                 let cached = try await cachedFlow.runCachedReconnectHandshake(
                     tail4: blePIN,
@@ -176,7 +176,7 @@ public final class LibreLoopPairingService {
             transport: transport,
             phoneCert: phoneCert,
             phoneEph: nativeEphemeral.keyPair,
-            eventLogger: nil
+            eventLogger: { message in llog(message) }
         )
 
         let handshake: FirstPairDerivedHandshakeResult
@@ -327,7 +327,7 @@ public final class LibreLoopPairingService {
             transport: transport,
             phoneCert: phoneCert,
             phoneEph: nativeEphemeral.keyPair,
-            eventLogger: nil
+            eventLogger: { message in llog(message) }
         )
 
         let handshake: FirstPairDerivedHandshakeResult

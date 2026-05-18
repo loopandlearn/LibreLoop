@@ -15,15 +15,8 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
     public typealias ReadingHandler = @Sendable (LibreLoopGlucoseSample) -> Void
     public typealias DisconnectHandler = @Sendable () -> Void
     public typealias StatusHandler = @Sendable (String) -> Void
-    public typealias HistoricalPageHandler = @Sendable (HistoricalReadingPage, BackfillSource) -> Void
-
-    /// Tags decoded backfill pages with the channel that delivered them so
-    /// the manager can apply source-aware dedup (clinical pages may overlap
-    /// historical pages and we don't want to double-feed Loop).
-    public enum BackfillSource: Sendable, Equatable {
-        case historical
-        case clinical
-    }
+    public typealias HistoricalPageHandler = @Sendable (HistoricalReadingPage) -> Void
+    public typealias ClinicalRecordHandler = @Sendable (ClinicalReadingRecord) -> Void
     /// Fires once the post-auth CCCD refresh completes and the monitor is
     /// ready to accept commands (backfill, etc) and stream data. Use this
     /// instead of a fixed-delay Task — CCCD refresh duration varies with
@@ -45,6 +38,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
     private var disconnectHandler: DisconnectHandler?
     private var statusHandler: StatusHandler?
     private var historicalPageHandler: HistoricalPageHandler?
+    private var clinicalRecordHandler: ClinicalRecordHandler?
     private var readyHandler: ReadyHandler?
     /// Per-session outbound write sequence counter, used for AES-CCM nonce
     /// construction on PatchControl writes.
@@ -61,7 +55,8 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
     public func setHandlers(onReading: @escaping ReadingHandler,
                             onDisconnect: @escaping DisconnectHandler,
                             onStatus: @escaping StatusHandler = { _ in },
-                            onHistoricalPage: @escaping HistoricalPageHandler = { _, _ in },
+                            onHistoricalPage: @escaping HistoricalPageHandler = { _ in },
+                            onClinicalRecord: @escaping ClinicalRecordHandler = { _ in },
                             onReady: @escaping ReadyHandler = {}) {
         lock.lock()
         defer { lock.unlock() }
@@ -69,6 +64,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
         self.disconnectHandler = onDisconnect
         self.statusHandler = onStatus
         self.historicalPageHandler = onHistoricalPage
+        self.clinicalRecordHandler = onClinicalRecord
         self.readyHandler = onReady
     }
 
@@ -239,12 +235,19 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
             let packet = try decoder.decrypt(frame: frame, channel: channel)
             switch packet.payload {
             case .historicalReadingPage(let page):
-                let source: BackfillSource = (channel == .clinicalData) ? .clinical : .historical
-                llog("\(source == .clinical ? "clinical" : "historical") page startLC=\(page.startLifeCount) endLC=\(page.endLifeCount) samples=\(page.samples.count)")
+                llog("historical page startLC=\(page.startLifeCount) endLC=\(page.endLifeCount) samples=\(page.samples.count)")
                 lock.lock()
                 let handler = historicalPageHandler
                 lock.unlock()
-                handler?(page, source)
+                handler?(page)
+            case .clinicalReadingRecord(let record):
+                let cur = record.currentGlucoseMgDL.map(String.init) ?? "nil"
+                let sm = record.smoothedGlucoseMgDL.map(String.init) ?? "nil"
+                llog("clinical record lifeCount=\(record.lifeCount) current=\(cur) mg/dL smoothed=\(sm) mg/dL @lifeCount=\(record.smoothedLifeCount)")
+                lock.lock()
+                let handler = clinicalRecordHandler
+                lock.unlock()
+                handler?(record)
             case .realtimeGlucose(let reading):
                 // Build a SensorLifecycle from the reading's own age counter so
                 // the quality assessment can correctly attribute "not actionable"

@@ -60,7 +60,8 @@ extension LibreLoopCGMManager {
             onReading: { [weak self] sample in self?.ingest(sample) },
             onDisconnect: { [weak self] in self?.handleMonitorDisconnect() },
             onStatus: { [weak self] text in self?.updateStatusDetail(text) },
-            onHistoricalPage: { [weak self] page, source in self?.handleHistoricalPage(page, source: source) }
+            onHistoricalPage: { [weak self] page in self?.handleHistoricalPage(page) },
+            onClinicalRecord: { [weak self] record in self?.handleClinicalRecord(record) }
         )
         monitor.start()
         // Start the no-data watchdog immediately after adoption -- if the
@@ -289,24 +290,7 @@ extension LibreLoopCGMManager {
     /// decoded mg/dL is present), push the batch to Loop's delegate, and
     /// advance `state.lastHistoricalLifeCount` so the next backfill picks
     /// up where we left off.
-    func handleHistoricalPage(_ page: HistoricalReadingPage, source: LibreLoopSensorMonitor.BackfillSource) {
-        // Clinical pages are intentionally NOT forwarded to Loop. The
-        // shared HistoricalReadingPage parser (5-min stride, word[0] =
-        // startLifeCount) produces wrong timestamps for clinical: field
-        // data showed values like 112 mg/dL "at lc=6522" arriving right
-        // after a realtime 169 mg/dL at lc=6521 with trend=rising —
-        // physically impossible. Until we reverse the actual clinical
-        // page layout, log the raw page so we have data to figure it out,
-        // but don't push the (likely wrong) lifeCounts into Loop's
-        // glucose store.
-        if source == .clinical {
-            let rawDump = page.samples.map { sample -> String in
-                let v = sample.glucoseMgDL.map { String($0) } ?? "nil"
-                return "lc=\(sample.lifeCount):mgdl=\(v):raw=0x\(String(format: "%04x", sample.rawValue))"
-            }.joined(separator: " ")
-            llog("clinical page (NOT FORWARDED) startLC=\(page.startLifeCount) endLC=\(page.endLifeCount) values=[\(rawDump)]")
-            return
-        }
+    func handleHistoricalPage(_ page: HistoricalReadingPage) {
         guard let activatedAt = state.activatedAt else {
             llog("backfill page received before activatedAt known; deferring")
             return
@@ -370,6 +354,52 @@ extension LibreLoopCGMManager {
         if page.endLifeCount > prior {
             updated.lastHistoricalLifeCount = page.endLifeCount
             setState(updated)
+        }
+    }
+
+    /// Forward a single per-minute glucose sample from a clinical-stream
+    /// record. The historical stream only persists 5-min boundary samples
+    /// so it can't fill the per-minute gaps left by a disconnect; clinical
+    /// records carry the current-minute reading at `record.lifeCount`,
+    /// which is exactly the granularity we want for gap-fill. Dedup is
+    /// the same two-layered check used for historical: skip if we already
+    /// have realtime or earlier-this-session backfill for that lifeCount.
+    func handleClinicalRecord(_ record: ClinicalReadingRecord) {
+        guard let activatedAt = state.activatedAt else {
+            llog("clinical record received before activatedAt known; deferring")
+            return
+        }
+        guard let mgdl = record.currentGlucoseMgDL else { return }
+        let serial = state.sensorSerial ?? "unknown"
+
+        let realtimeLifeCounts = Set(recentSamples.map { $0.lifeCount })
+        if realtimeLifeCounts.contains(record.lifeCount) {
+            llog("clinical record at lifeCount=\(record.lifeCount) dropped: realtime-dup")
+            return
+        }
+        if backfillForwardedLifeCounts.contains(record.lifeCount) {
+            llog("clinical record at lifeCount=\(record.lifeCount) dropped: backfill-dup")
+            return
+        }
+
+        let date = activatedAt.addingTimeInterval(TimeInterval(record.lifeCount) * 60)
+        let sample = NewGlucoseSample(
+            date: date,
+            quantity: LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: Double(mgdl)),
+            condition: nil,
+            trend: nil,
+            trendRate: nil,
+            isDisplayOnly: false,
+            wasUserEntered: false,
+            syncIdentifier: "libreloop-bkfill-\(serial)-\(record.lifeCount)",
+            syncVersion: 1,
+            device: device
+        )
+        backfillForwardedLifeCounts.insert(record.lifeCount)
+        llog("forwarded clinical sample to Loop: \(mgdl) mg/dL lifeCount=\(record.lifeCount) sampleDate=\(date.timeIntervalSince1970)")
+        delegateQueue?.async { [weak self] in
+            guard let self else { return }
+            self.cgmManagerDelegate?.cgmManager(self, hasNew: .newData([sample]))
         }
     }
 

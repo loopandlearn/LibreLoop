@@ -226,6 +226,14 @@ public final class LibreLoopCGMManager: CGMManager {
     /// is adopted fresh (see `adopt`).
     var backfillForwardedLifeCounts: Set<UInt16> = []
 
+    /// Wall-clock timestamp of the most recent historical backfill page we
+    /// received this session. Used by the post-historical clinical request
+    /// to wait for the historical stream to drain before writing the
+    /// clinical command — issuing patchControl while the sensor is still
+    /// responding to the previous command produces an ATT writeFailed
+    /// "Unknown ATT error".
+    var lastHistoricalPageAt: Date?
+
     /// Single long-lived BLE scanner. Created with
     /// CBCentralManagerOptionRestoreIdentifierKey so iOS can preserve the
     /// connected peripheral + subscriptions across app terminations and

@@ -56,6 +56,7 @@ extension LibreLoopCGMManager {
         // Each new BLE session gets its own backfill window.
         self.hasRequestedBackfillThisSession = false
         self.backfillForwardedLifeCounts.removeAll(keepingCapacity: true)
+        self.lastHistoricalPageAt = nil
         monitor.setHandlers(
             onReading: { [weak self] sample in self?.ingest(sample) },
             onDisconnect: { [weak self] in self?.handleMonitorDisconnect() },
@@ -105,16 +106,39 @@ extension LibreLoopCGMManager {
                 self.hasRequestedBackfillThisSession = false   // retry on next reading
                 return
             }
-            // Diagnostic: also pull the clinical stream covering the same
-            // range. LibreCRKit's docs don't ground what clinical contains
-            // vs historical; handleHistoricalPage logs the source and skips
-            // any sample whose lifeCount we've already forwarded via
-            // realtime or historical, so duplicates can't reach Loop.
-            do {
-                try await monitor.requestClinicalBackfill(fromLifeCount: from)
-            } catch {
-                guard let self else { return }
-                llog("clinical backfill request failed (non-fatal): \(String(describing: error))")
+            // Wait for the historical stream to drain before issuing the
+            // clinical request. The sensor's patchControl write rejects a
+            // second command while it's still responding to the first —
+            // observed in the field as `writeFailed("Unknown ATT error")`
+            // when clinical went out 0.4s after historical pages were
+            // still arriving. Poll until we've seen no historical page
+            // for `idleThreshold`, capped at `maxWait`.
+            guard let self else { return }
+            let idleThreshold: TimeInterval = 1.5
+            let maxWait: TimeInterval = 15
+            let waitStart = Date()
+            while Date().timeIntervalSince(waitStart) < maxWait {
+                let last = self.lastHistoricalPageAt
+                let sinceLast = last.map { Date().timeIntervalSince($0) } ?? .infinity
+                if sinceLast >= idleThreshold { break }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+            // Retry clinical with simple backoff. ATT errors right after
+            // historical drain are usually transient (sensor still
+            // settling); a couple of seconds between attempts clears them.
+            let backoffs: [TimeInterval] = [0, 2, 4]
+            for (i, delay) in backoffs.enumerated() {
+                if delay > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                }
+                do {
+                    try await monitor.requestClinicalBackfill(fromLifeCount: from)
+                    return
+                } catch {
+                    let isLast = (i == backoffs.count - 1)
+                    let prefix = isLast ? "clinical backfill failed after \(i + 1) attempts" : "clinical backfill attempt \(i + 1) failed, will retry"
+                    llog("\(prefix): \(String(describing: error))")
+                }
             }
         }
     }
@@ -291,6 +315,11 @@ extension LibreLoopCGMManager {
     /// advance `state.lastHistoricalLifeCount` so the next backfill picks
     /// up where we left off.
     func handleHistoricalPage(_ page: HistoricalReadingPage) {
+        // Stamp this BEFORE the early-return guard — even pages we can't
+        // forward yet count as the sensor still streaming to us. Used by
+        // the post-historical clinical-request scheduler to detect when
+        // the historical stream has drained.
+        lastHistoricalPageAt = Date()
         guard let activatedAt = state.activatedAt else {
             llog("backfill page received before activatedAt known; deferring")
             return

@@ -290,12 +290,29 @@ extension LibreLoopCGMManager {
     /// advance `state.lastHistoricalLifeCount` so the next backfill picks
     /// up where we left off.
     func handleHistoricalPage(_ page: HistoricalReadingPage, source: LibreLoopSensorMonitor.BackfillSource) {
+        // Clinical pages are intentionally NOT forwarded to Loop. The
+        // shared HistoricalReadingPage parser (5-min stride, word[0] =
+        // startLifeCount) produces wrong timestamps for clinical: field
+        // data showed values like 112 mg/dL "at lc=6522" arriving right
+        // after a realtime 169 mg/dL at lc=6521 with trend=rising —
+        // physically impossible. Until we reverse the actual clinical
+        // page layout, log the raw page so we have data to figure it out,
+        // but don't push the (likely wrong) lifeCounts into Loop's
+        // glucose store.
+        if source == .clinical {
+            let rawDump = page.samples.map { sample -> String in
+                let v = sample.glucoseMgDL.map { String($0) } ?? "nil"
+                return "lc=\(sample.lifeCount):mgdl=\(v):raw=0x\(String(format: "%04x", sample.rawValue))"
+            }.joined(separator: " ")
+            llog("clinical page (NOT FORWARDED) startLC=\(page.startLifeCount) endLC=\(page.endLifeCount) values=[\(rawDump)]")
+            return
+        }
         guard let activatedAt = state.activatedAt else {
             llog("backfill page received before activatedAt known; deferring")
             return
         }
         let serial = state.sensorSerial ?? "unknown"
-        let sourceLabel = (source == .clinical) ? "clinical" : "historical"
+        let sourceLabel = "historical"
         // Dedup is two-layered: against realtime (live BLE stream we already
         // forwarded) and against this session's prior backfill forwards
         // (historical and clinical can overlap, and they may not even agree
@@ -346,11 +363,8 @@ extension LibreLoopCGMManager {
         } else if droppedRealtimeDup + droppedBackfillDup > 0 {
             llog("dropped all \(droppedRealtimeDup + droppedBackfillDup) \(sourceLabel) backfill sample(s) in page lifeCount \(page.startLifeCount)..\(page.endLifeCount) (realtime-dup=\(droppedRealtimeDup), backfill-dup=\(droppedBackfillDup))")
         }
-        // Advance the historical watermark only for historical pages. The
-        // clinical stream may have a different commit cadence; mixing it
-        // into lastHistoricalLifeCount could cause us to skip a historical
-        // page that hadn't been committed yet at the time clinical arrived.
-        guard source == .historical else { return }
+        // Advance the historical watermark. Clinical pages early-returned
+        // above and never reach this point.
         var updated = state
         let prior = updated.lastHistoricalLifeCount ?? 0
         if page.endLifeCount > prior {

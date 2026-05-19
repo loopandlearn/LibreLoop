@@ -4,7 +4,6 @@ import LibreCRKit
 import LoopAlgorithm
 import LoopKit
 import os.log
-import UIKit
 
 
 extension LibreLoopCGMManager {
@@ -234,82 +233,6 @@ extension LibreLoopCGMManager {
 
     private static var reconnectTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
 
-    /// Wraps `work` in a UIApplication background task so iOS keeps us alive
-    /// long enough to finish even when the app is backgrounded.
-    ///
-    /// Returns true if the work completed before the bg window expired;
-    /// false on expiration. On expiration, the work Task is cancelled and
-    /// we return WITHOUT waiting for it. Field log captured a 6h36m stall
-    /// when the bg task expired mid-BLE handshake: LibreCRKit's
-    /// continuation-based awaits don't honor cooperative cancellation, so a
-    /// stuck workTask never resolves and `await workTask.value` would park
-    /// indefinitely too. By bailing on expiration we let the reconnect
-    /// loop's outer iterate to a fresh attempt next time iOS gives us
-    /// runtime. The orphaned workTask is harmless — it'll either complete
-    /// naturally or stay parked; the next reconnect's scanner.connect
-    /// handles an already-connected peripheral.
-    @discardableResult
-    static func withBackgroundTask(name: String, _ work: @Sendable @escaping () async -> Void) async -> Bool {
-        let app = await MainActor.run { UIApplication.shared }
-        let workTask = Task { await work() }
-        let idBox = TaskIdentifierBox()
-        let expirationBox = ExpirationBox()
-        let id = await MainActor.run {
-            app.beginBackgroundTask(withName: name) {
-                expirationBox.expired = true
-                let taskID = idBox.value
-                if taskID != .invalid {
-                    llog("background task '\(name)' expired before work completed; abandoning in-flight work")
-                    workTask.cancel()
-                    app.endBackgroundTask(taskID)
-                    idBox.value = .invalid
-                }
-            }
-        }
-        idBox.value = id
-        if id == .invalid {
-            llog("background task '\(name)' could not be started (app may be unable to extend runtime)")
-        } else {
-            llog("background task '\(name)' started id=\(id.rawValue)")
-        }
-        // Race work completion vs. bg-expiration. Whichever flips first wins.
-        let completed: Bool = await withTaskGroup(of: Bool.self) { group in
-            group.addTask {
-                await workTask.value
-                return true
-            }
-            group.addTask {
-                while !Task.isCancelled, !expirationBox.expired {
-                    try? await Task.sleep(nanoseconds: 250_000_000)
-                }
-                return false
-            }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
-        }
-        await MainActor.run {
-            let taskID = idBox.value
-            if taskID != .invalid {
-                app.endBackgroundTask(taskID)
-                idBox.value = .invalid
-                llog("background task '\(name)' ended id=\(taskID.rawValue)")
-            }
-        }
-        return completed
-    }
-
-    private final class ExpirationBox: @unchecked Sendable {
-        var expired: Bool = false
-    }
-
-    /// Reference container so the expiration handler and the post-work cleanup
-    /// can race safely on the same identifier without forcing us into a
-    /// @MainActor closure capture.
-    private final class TaskIdentifierBox: @unchecked Sendable {
-        var value: UIBackgroundTaskIdentifier = .invalid
-    }
-
     /// Convert each historical sample into a NewGlucoseSample (when the page
     /// decoded mg/dL is present), push the batch to Loop's delegate, and
     /// advance `state.lastHistoricalLifeCount` so the next backfill picks
@@ -462,14 +385,16 @@ extension LibreLoopCGMManager {
                 await MainActor.run { self.isReconnecting = true }
                 try? await Task.sleep(nanoseconds: UInt64(Self.reconnectDelay * 1_000_000_000))
                 if Task.isCancelled { break }
-                // Bracket the reconnect with a UIApplication background task so
-                // iOS gives us the ~30s window needed to finish a BLE handshake
-                // when this loop fires while the app is backgrounded. Without
-                // this we get suspended mid-handshake and the await chain parks
-                // indefinitely (verified in the 18:31→18:47 hang in field logs).
-                await Self.withBackgroundTask(name: "LibreLoop.reconnect") {
-                    await self.runReconnectOnce()
-                }
+                // No bg task. The slow parts of reconnect (central.connect,
+                // notify-stream reads) are iOS-driven — we're just awaiting
+                // callbacks. If iOS suspends us mid-handshake, the sensor
+                // hits its own protocol timeout and disconnects, which
+                // surfaces via didDisconnectPeripheral → handleDisconnect →
+                // all pending session awaits throw .disconnected — our
+                // catch then loops back to a fresh attempt. The sensor is
+                // the natural deadline; an artificial 30s bg-task budget
+                // racing on top just makes us fight iOS's BLE wake schedule.
+                await self.runReconnectOnce()
                 if self.monitor != nil { return }
                 // failure -> loop back, sleep, retry. Never gives up.
             }

@@ -146,6 +146,7 @@ public final class LibreLoopCGMManager: CGMManager {
         monitor = nil
         isReconnecting = false
         recentSamples = []
+        retractExpiryAlerts()
         var blank = state
         blank.receiverID = nil
         blank.sensorSerial = nil
@@ -158,6 +159,7 @@ public final class LibreLoopCGMManager: CGMManager {
         blank.lastHistoricalLifeCount = nil
         blank.latestSample = nil
         blank.recentSamples = []
+        blank.expiryAlertsScheduledForActivatedAt = nil
         setState(blank)
     }
 

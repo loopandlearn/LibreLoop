@@ -50,6 +50,11 @@ public struct LibreLoopCGMManagerState: RawRepresentable, Equatable {
     /// default — flipping it on requires reading a warning sheet that
     /// explains the dosing-cadence implications first.
     public var experimentalMinuteByMinuteForwarding: Bool = false
+    /// `activatedAt` value for which we last issued sensor-expiry alerts
+    /// via Loop's AlertManager. When this matches the current
+    /// `activatedAt`, expiry alerts are already scheduled and we skip
+    /// re-issuing on every reading. Cleared on `discardSensor()`.
+    public var expiryAlertsScheduledForActivatedAt: Date?
 
     public init() {}
 
@@ -72,6 +77,7 @@ public struct LibreLoopCGMManagerState: RawRepresentable, Equatable {
         }
         self.latestForwardedToLoopAt = rawValue["latestForwardedToLoopAt"] as? Date
         self.experimentalMinuteByMinuteForwarding = rawValue["experimentalMinuteByMinuteForwarding"] as? Bool ?? false
+        self.expiryAlertsScheduledForActivatedAt = rawValue["expiryAlertsScheduledForActivatedAt"] as? Date
     }
 
     public var rawValue: RawValue {
@@ -94,6 +100,7 @@ public struct LibreLoopCGMManagerState: RawRepresentable, Equatable {
         if experimentalMinuteByMinuteForwarding {
             raw["experimentalMinuteByMinuteForwarding"] = true
         }
+        raw["expiryAlertsScheduledForActivatedAt"] = expiryAlertsScheduledForActivatedAt
         return raw
     }
 }

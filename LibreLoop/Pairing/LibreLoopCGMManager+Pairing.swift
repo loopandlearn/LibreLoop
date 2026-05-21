@@ -15,6 +15,47 @@ extension LibreLoopCGMManager {
             | (UInt32(data[3]) << 24)
     }
 
+    /// Schedule sensor expiry alerts through Loop's AlertManager when
+    /// `activatedAt` is new (or first known). Returns the value to store
+    /// in `expiryAlertsScheduledForActivatedAt`. Idempotent — called from
+    /// `ingest(_:)` on every reading; returns the existing tracker value
+    /// unchanged when nothing needs rescheduling. Fire-and-forget: the
+    /// AlertManager handles persistence so if the delegate is briefly nil
+    /// we'll retry on the next reading.
+    func scheduleExpiryAlertsIfNeeded(activatedAt: Date?, currentTracker: Date?) -> Date? {
+        guard let activatedAt else { return currentTracker }
+        if currentTracker == activatedAt { return currentTracker }
+        let alerts = LibreLoopExpiryAlerts.scheduledAlerts(
+            managerIdentifier: pluginIdentifier,
+            sensorActivatedAt: activatedAt
+        )
+        let delegate = cgmManagerDelegate
+        if alerts.isEmpty {
+            llog("expiry alerts: all trigger times in the past for activatedAt=\(activatedAt); marking scheduled")
+        } else {
+            llog("expiry alerts: scheduling \(alerts.count) alert(s) for activatedAt=\(activatedAt)")
+            Task {
+                for alert in alerts {
+                    await delegate?.issueAlert(alert)
+                }
+            }
+        }
+        return activatedAt
+    }
+
+    func retractExpiryAlerts() {
+        let delegate = cgmManagerDelegate
+        let identifiers = LibreLoopExpiryAlerts.allIdentifiers.map {
+            Alert.Identifier(managerIdentifier: pluginIdentifier, alertIdentifier: $0)
+        }
+        llog("expiry alerts: retracting \(identifiers.count) identifier(s)")
+        Task {
+            for identifier in identifiers {
+                await delegate?.retractAlert(identifier: identifier)
+            }
+        }
+    }
+
     /// Saves the NFC half of pairing the instant it completes successfully,
     /// before any BLE work. Per LibreCRKit author guidance: a successful A8
     /// burns the previous BLE PIN and issues a new one in the response, so
@@ -173,6 +214,10 @@ extension LibreLoopCGMManager {
         if updated.activatedAt == nil {
             updated.activatedAt = sample.date.addingTimeInterval(-TimeInterval(sample.lifeCount) * 60)
         }
+        updated.expiryAlertsScheduledForActivatedAt = scheduleExpiryAlertsIfNeeded(
+            activatedAt: updated.activatedAt,
+            currentTracker: updated.expiryAlertsScheduledForActivatedAt
+        )
         // First time the sensor flags a reading actionable post-pair tells
         // us warmup is done. Pin it so the lifecycle bar can leave warmup.
         if sample.isActionable, updated.firstActionableReadingAt == nil {

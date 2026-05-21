@@ -14,6 +14,7 @@ struct LibreLoopSettingsView: View {
 
     var body: some View {
         List {
+            sensorImageHeader
             sensorSection
             lastReadingSection
             recentReadingsSection
@@ -54,6 +55,30 @@ struct LibreLoopSettingsView: View {
         }
         .onAppear { viewModel.subscribe() }
         .onDisappear { viewModel.unsubscribe() }
+    }
+
+    private var sensorImageHeader: some View {
+        Section {
+            HStack {
+                Spacer()
+                // Plugin frameworks load at runtime, so the image lookup
+                // has to point at the framework bundle (not main). The
+                // SwiftUI `Image(_:bundle:)` form doesn't resolve raw
+                // PNGs in plugin framework bundles in practice — go
+                // through UIImage explicitly.
+                if let uiImage = UIImage(named: "FSL3-sensor",
+                                         in: Bundle(for: LibreLoopSettingsViewModel.self),
+                                         compatibleWith: nil) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 150, height: 150)
+                }
+                Spacer()
+            }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
     }
 
     private var sensorSection: some View {

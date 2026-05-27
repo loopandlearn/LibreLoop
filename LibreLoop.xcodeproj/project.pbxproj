@@ -137,7 +137,7 @@
 		D912C6E4A9CF07D06EEF98BA /* LibreLoopKeychain.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LibreLoopKeychain.swift; sourceTree = "<group>"; };
 		D9403F883CAA31D5C60E378F /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		DB7D98A40E47D0CE6460DA77 /* LibreLoopScanHelpPagerView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LibreLoopScanHelpPagerView.swift; sourceTree = "<group>"; };
-		E628917C8E389EE6286D8CBB /* LibreLoopPlugin.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LibreLoopPlugin.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		E628917C8E389EE6286D8CBB /* LibreLoopPlugin.loopplugin */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LibreLoopPlugin.loopplugin; sourceTree = BUILT_PRODUCTS_DIR; };
 		EC72E7DAB11D3AC7CA1A10BB /* LibreLoopCGMManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LibreLoopCGMManager.swift; sourceTree = "<group>"; };
 		F300289D51824D5C86B99CCE /* LibreLoopSensorMonitor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LibreLoopSensorMonitor.swift; sourceTree = "<group>"; };
 		F724D2D5A2C640A6A76DE710 /* LibreLoopPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LibreLoopPlugin.swift; sourceTree = "<group>"; };
@@ -298,7 +298,7 @@
 			children = (
 				B556C4EB4504CA4CFCF51EA2 /* LibreLoop.framework */,
 				5155F4E87FAA05CC59E43F47 /* LibreLoopUI.framework */,
-				E628917C8E389EE6286D8CBB /* LibreLoopPlugin.framework */,
+				E628917C8E389EE6286D8CBB /* LibreLoopPlugin.loopplugin */,
 				5D9713A2EE7BAA3A52EC4ADF /* LibreLoopTests.xctest */,
 			);
 			name = Products;
@@ -460,7 +460,7 @@
 			);
 			name = LibreLoopPlugin;
 			productName = LibreLoopPlugin;
-			productReference = E628917C8E389EE6286D8CBB /* LibreLoopPlugin.framework */;
+			productReference = E628917C8E389EE6286D8CBB /* LibreLoopPlugin.loopplugin */;
 			productType = "com.apple.product-type.framework";
 		};
 		DBC1BA591653686BF48EE7C1 /* LibreLoopTests */ = {

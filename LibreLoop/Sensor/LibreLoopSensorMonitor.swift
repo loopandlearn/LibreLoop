@@ -17,6 +17,14 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
     public typealias StatusHandler = @Sendable (String) -> Void
     public typealias HistoricalPageHandler = @Sendable (HistoricalReadingPage) -> Void
     public typealias ClinicalRecordHandler = @Sendable (ClinicalReadingRecord) -> Void
+    /// Every realtime glucose packet carries a paired 5-min historical
+    /// sample (lifeCount + mg/dL) that the sensor commits at the same
+    /// time as the current-minute realtime value. Surfacing these
+    /// continuously means the historical buffer self-fills at realtime
+    /// cadence, so a later reconnect's dedicated history backfill only
+    /// needs to cover the actual outage window — not the sensor's
+    /// ~15-min commit lag on top.
+    public typealias EmbeddedHistoricalHandler = @Sendable (UInt16, UInt16) -> Void
     /// Fires once the post-auth CCCD refresh completes and the monitor is
     /// ready to accept commands (backfill, etc) and stream data. Use this
     /// instead of a fixed-delay Task — CCCD refresh duration varies with
@@ -39,6 +47,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
     private var statusHandler: StatusHandler?
     private var historicalPageHandler: HistoricalPageHandler?
     private var clinicalRecordHandler: ClinicalRecordHandler?
+    private var embeddedHistoricalHandler: EmbeddedHistoricalHandler?
     private var readyHandler: ReadyHandler?
     /// Per-session outbound write sequence counter, used for AES-CCM nonce
     /// construction on PatchControl writes.
@@ -57,6 +66,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
                             onStatus: @escaping StatusHandler = { _ in },
                             onHistoricalPage: @escaping HistoricalPageHandler = { _ in },
                             onClinicalRecord: @escaping ClinicalRecordHandler = { _ in },
+                            onEmbeddedHistorical: @escaping EmbeddedHistoricalHandler = { _, _ in },
                             onReady: @escaping ReadyHandler = {}) {
         lock.lock()
         defer { lock.unlock() }
@@ -65,6 +75,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
         self.statusHandler = onStatus
         self.historicalPageHandler = onHistoricalPage
         self.clinicalRecordHandler = onClinicalRecord
+        self.embeddedHistoricalHandler = onEmbeddedHistorical
         self.readyHandler = onReady
     }
 
@@ -265,6 +276,19 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
                     let handler = readingHandler
                     lock.unlock()
                     handler?(sample)
+                }
+                // Surface the realtime packet's paired 5-min historical
+                // sample. Sensor commits this at the same time as the
+                // current-minute realtime value; harvesting it here is
+                // what keeps the historical buffer aligned to "now" and
+                // makes reconnect-time gap-fill mostly unnecessary.
+                if reading.isHistoricalGlucoseValid,
+                   let histMgDL = reading.historicalGlucoseMgDL,
+                   reading.historicalLifeCount > 0 {
+                    lock.lock()
+                    let embedded = embeddedHistoricalHandler
+                    lock.unlock()
+                    embedded?(reading.historicalLifeCount, histMgDL)
                 }
             default:
                 llog("\(channel.rawValue) packet kind=\(packet.kind.rawValue) (no sample)")

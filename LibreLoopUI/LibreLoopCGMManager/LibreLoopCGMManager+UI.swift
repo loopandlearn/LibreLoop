@@ -7,7 +7,9 @@ import LoopKitUI
 import LibreLoop
 
 extension LibreLoopCGMManager: CGMManagerUI {
-    public static var onboardingImage: UIImage? { nil }
+    public static var onboardingImage: UIImage? {
+        UIImage(named: "FSL3-sensor", in: Bundle(for: LibreLoopSettingsViewModel.self), compatibleWith: nil)
+    }
 
     public static func setupViewController(
         bluetoothProvider: BluetoothProvider,
@@ -28,7 +30,9 @@ extension LibreLoopCGMManager: CGMManagerUI {
         LibreLoopUICoordinator(cgmManager: self, colorPalette: colorPalette)
     }
 
-    public var smallImage: UIImage? { nil }
+    public var smallImage: UIImage? {
+        UIImage(named: "FSL3-sensor", in: Bundle(for: LibreLoopSettingsViewModel.self), compatibleWith: nil)
+    }
 
     public var cgmStatusHighlight: DeviceStatusHighlight? { nil }
 

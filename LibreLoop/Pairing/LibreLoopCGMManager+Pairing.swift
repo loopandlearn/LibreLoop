@@ -111,7 +111,10 @@ extension LibreLoopCGMManager {
             onDisconnect: { [weak self] in self?.handleMonitorDisconnect() },
             onStatus: { [weak self] text in self?.updateStatusDetail(text) },
             onHistoricalPage: { [weak self] page in self?.handleHistoricalPage(page) },
-            onClinicalRecord: { [weak self] record in self?.handleClinicalRecord(record) }
+            onClinicalRecord: { [weak self] record in self?.handleClinicalRecord(record) },
+            onEmbeddedHistorical: { [weak self] lifeCount, mgdl in
+                self?.handleEmbeddedHistorical(lifeCount: lifeCount, mgdl: mgdl)
+            }
         )
         monitor.start()
         // Start the no-data watchdog immediately after adoption -- if the
@@ -140,6 +143,16 @@ extension LibreLoopCGMManager {
     /// Trigger a backfill request once per BLE session, anchored to a real
     /// realtime reading's lifecount. Called from `ingest`. Subsequent
     /// realtime readings during the same session are no-ops.
+    ///
+    /// Two-pass backfill strategy:
+    /// - Pass 1 (immediate): covers the outage window from the watermark up
+    ///   to whatever the sensor has committed at reconnect time (~T-17 min
+    ///   due to the sensor's internal commit lag).
+    /// - Pass 2 (22-min delay): covers the ~17-min tail window the sensor
+    ///   hadn't committed yet at reconnect, using the current watermark at
+    ///   fire time so it picks up exactly what embedded-historical harvest
+    ///   may have missed. Combined with the embedded harvest these two
+    ///   passes fully close the post-reconnect gap.
     func requestBackfillIfNeeded(currentLifeCount: UInt16) {
         guard !hasRequestedBackfillThisSession else { return }
         guard let monitor else { return }
@@ -182,12 +195,29 @@ extension LibreLoopCGMManager {
                 }
                 do {
                     try await monitor.requestClinicalBackfill(fromLifeCount: from)
-                    return
+                    break
                 } catch {
                     let isLast = (i == backoffs.count - 1)
                     let prefix = isLast ? "clinical backfill failed after \(i + 1) attempts" : "clinical backfill attempt \(i + 1) failed, will retry"
                     llog("\(prefix): \(String(describing: error))")
                 }
+            }
+
+            // Pass 2: wait 22 min then re-request historical from the
+            // current watermark. The sensor commits 5-min historical
+            // entries with ~17 min lag, so entries for T-17..T weren't
+            // in the sensor's buffer at reconnect. By T+22 they are,
+            // and the watermark has advanced via embedded-historical
+            // harvest to reflect only what we're still missing.
+            try? await Task.sleep(nanoseconds: 22 * 60 * 1_000_000_000)
+            guard !Task.isCancelled, let followUpMonitor = self.monitor else { return }
+            let watermark = self.state.lastHistoricalLifeCount ?? from
+            let followUpFrom: UInt16 = watermark > 5 ? watermark - 5 : 1
+            llog("backfill pass 2: requesting from lifeCount=\(followUpFrom) (watermark=\(watermark))")
+            do {
+                try await followUpMonitor.requestHistoricalBackfill(fromLifeCount: followUpFrom)
+            } catch {
+                llog("backfill pass 2 failed: \(String(describing: error))")
             }
         }
     }
@@ -207,6 +237,19 @@ extension LibreLoopCGMManager {
 
         var updated = state
         updated.latestReadingTimestamp = sample.date
+        // Advance the backfill watermark on every successful realtime
+        // ingest. Without this, `lastHistoricalLifeCount` only moves
+        // forward on backfill responses, so after hours of healthy
+        // realtime traffic the watermark stays frozen at the last
+        // backfill point. A reconnect would then trigger a huge
+        // catch-up request that mostly hits the realtime-dup filter
+        // (and, empirically, can overrun the sensor's BLE pacing and
+        // stall realtime entirely). Bumping it here means a reconnect
+        // backfill only covers what we actually missed.
+        let priorWatermark = updated.lastHistoricalLifeCount ?? 0
+        if sample.lifeCount > priorWatermark {
+            updated.lastHistoricalLifeCount = sample.lifeCount
+        }
         // Back-derive activation timestamp from the sensor's own age counter
         // (lifeCount, minutes since activation). Only set it once -- later
         // readings shouldn't shift it (small drift would otherwise jitter the
@@ -371,6 +414,59 @@ extension LibreLoopCGMManager {
         }
     }
 
+    /// Forward the 5-min historical sample that the sensor pairs with
+    /// every realtime glucose packet. Doing this continuously keeps the
+    /// historical buffer aligned to "now minus ~17 min" without needing
+    /// any post-reconnect re-request — the next session's disconnect
+    /// window is the only gap a dedicated history backfill needs to
+    /// cover. Pattern mirrors Juggluco's `saveLibre3Historyel` call on
+    /// every 1-min glucose packet (and DiaBLE's
+    /// `mergeHistoricSamples` from live packets).
+    ///
+    /// Fired on every realtime tick, so the dedup gate matters: the
+    /// embedded historical sample only advances every 5 lifeCounts, so
+    /// 4 of every 5 calls land in the backfill-dup early return.
+    func handleEmbeddedHistorical(lifeCount: UInt16, mgdl: UInt16) {
+        guard let activatedAt = state.activatedAt else { return }
+        if backfillForwardedLifeCounts.contains(lifeCount) { return }
+        // Realtime carries its own current-minute lifeCount; the
+        // embedded historical's lifeCount is always older than (and
+        // distinct from) any realtime lifeCount we've seen, so a
+        // realtime-dup check would only trigger if the user briefly
+        // disabled the embedded path. Cheap to include for safety.
+        if recentSamples.contains(where: { $0.lifeCount == lifeCount }) { return }
+
+        let serial = state.sensorSerial ?? "unknown"
+        let date = activatedAt.addingTimeInterval(TimeInterval(lifeCount) * 60)
+        let sample = NewGlucoseSample(
+            date: date,
+            quantity: LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: Double(mgdl)),
+            condition: nil,
+            trend: nil,
+            trendRate: nil,
+            isDisplayOnly: false,
+            wasUserEntered: false,
+            syncIdentifier: "libreloop-bkfill-\(serial)-\(lifeCount)",
+            syncVersion: 1,
+            device: device
+        )
+        backfillForwardedLifeCounts.insert(lifeCount)
+        // Advance the historical watermark so reconnect backfill only
+        // covers the genuine outage window. Mirrors the bump in
+        // `handleHistoricalPage`.
+        var updated = state
+        let priorWatermark = updated.lastHistoricalLifeCount ?? 0
+        if lifeCount > priorWatermark {
+            updated.lastHistoricalLifeCount = lifeCount
+            setState(updated)
+        }
+        llog("forwarded embedded historical sample to Loop: \(mgdl) mg/dL lifeCount=\(lifeCount) sampleDate=\(date.timeIntervalSince1970)")
+        delegateQueue?.async { [weak self] in
+            guard let self else { return }
+            self.cgmManagerDelegate?.cgmManager(self, hasNew: .newData([sample]))
+        }
+    }
+
     /// Forward a single per-minute glucose sample from a clinical-stream
     /// record. The historical stream only persists 5-min boundary samples
     /// so it can't fill the per-minute gaps left by a disconnect; clinical
@@ -423,6 +519,14 @@ extension LibreLoopCGMManager {
         self.hasRequestedBackfillThisSession = false
         cancelNoDataWatchdog()
         cancelReconnect()
+        // Re-register for connection events on every disconnect, mirroring
+        // G7's scanForPeripheral() pattern. The registration persists through
+        // app suspension; re-issuing it ensures iOS has a fresh subscription
+        // even if the prior one was cleared by a state-restoration cycle.
+        if let id = state.peripheralID {
+            scanner.registerForConnectionEvents(peripheralIDs: [id])
+            llog("re-registered for connection events on peripheral \(id.uuidString)")
+        }
         startReconnectLoop()
     }
 
@@ -445,20 +549,20 @@ extension LibreLoopCGMManager {
                     return
                 }
                 await MainActor.run { self.isReconnecting = true }
-                try? await Task.sleep(nanoseconds: UInt64(Self.reconnectDelay * 1_000_000_000))
-                if Task.isCancelled { break }
-                // No bg task. The slow parts of reconnect (central.connect,
-                // notify-stream reads) are iOS-driven — we're just awaiting
-                // callbacks. If iOS suspends us mid-handshake, the sensor
-                // hits its own protocol timeout and disconnects, which
-                // surfaces via didDisconnectPeripheral → handleDisconnect →
-                // all pending session awaits throw .disconnected — our
-                // catch then loops back to a fresh attempt. The sensor is
-                // the natural deadline; an artificial 30s bg-task budget
-                // racing on top just makes us fight iOS's BLE wake schedule.
+                // No pre-attempt sleep. connect() must be queued with iOS
+                // immediately after a disconnect — if we yield via Task.sleep
+                // before calling connect(), iOS can suspend the app with no
+                // pending connect in its CB stack, and nothing will wake us.
+                // G7's Thread.sleep(2) is a blocking call on a DispatchQueue
+                // thread that doesn't yield to the scheduler; Task.sleep does.
+                // The delay moves to after a failed attempt so retries still
+                // have a brief pause without blocking the first attempt.
                 await self.runReconnectOnce()
                 if self.monitor != nil { return }
-                // failure -> loop back, sleep, retry. Never gives up.
+                // Retry after a brief pause so we don't spam the BLE stack
+                // on repeated failures (sensor out of range, handshake error).
+                try? await Task.sleep(nanoseconds: UInt64(Self.reconnectDelay * 1_000_000_000))
+                if Task.isCancelled { break }
             }
         }
         Self.reconnectTasks[ObjectIdentifier(self)] = task

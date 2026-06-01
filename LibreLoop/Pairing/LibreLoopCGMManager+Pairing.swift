@@ -77,6 +77,9 @@ extension LibreLoopCGMManager {
         if let wear = response.wearDurationMinutes, wear > 0 {
             newState.wearDurationMinutes = wear
         }
+        if let gen = response.generation {
+            newState.generation = gen
+        }
         setState(newState)
     }
 

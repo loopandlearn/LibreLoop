@@ -55,16 +55,23 @@ public struct LibreLoopCGMManagerState: RawRepresentable, Equatable {
     /// field was added; callers fall back to the 14-day spec default in
     /// that case. Libre 3 Plus sensors report a longer duration.
     public var wearDurationMinutes: Int?
+    /// NFC patch-info `generation` field (bytes 4–5 of the patch-info
+    /// frame). 0 = Libre 3, 1 = Libre 3 Plus / Instinct. Nil for state
+    /// paired before this field was captured.
+    public var generation: UInt16?
     /// `activatedAt` value for which we last issued sensor-expiry alerts
     /// via Loop's AlertManager. When this matches the current
     /// `activatedAt`, expiry alerts are already scheduled and we skip
     /// re-issuing on every reading. Cleared on `discardSensor()`.
     public var expiryAlertsScheduledForActivatedAt: Date?
 
-    /// Human-readable sensor model derived from the NFC-reported wear
-    /// duration. nil when the sensor hasn't been paired yet or was paired
-    /// before wear-duration capture was added.
+    /// Human-readable sensor model. Derived from `generation` when
+    /// available (preferred), falling back to the wear-duration heuristic
+    /// for state paired before generation was captured.
     public var sensorModel: String? {
+        if let gen = generation {
+            return gen == 0 ? "Libre 3" : "Libre 3 Plus"
+        }
         guard let minutes = wearDurationMinutes else { return nil }
         return minutes < 15 * 24 * 60 ? "Libre 3" : "Libre 3 Plus"
     }
@@ -91,6 +98,7 @@ public struct LibreLoopCGMManagerState: RawRepresentable, Equatable {
         self.latestForwardedToLoopAt = rawValue["latestForwardedToLoopAt"] as? Date
         self.experimentalMinuteByMinuteForwarding = rawValue["experimentalMinuteByMinuteForwarding"] as? Bool ?? false
         self.wearDurationMinutes = rawValue["wearDurationMinutes"] as? Int
+        self.generation = (rawValue["generation"] as? Int).map { UInt16(clamping: $0) }
         self.expiryAlertsScheduledForActivatedAt = rawValue["expiryAlertsScheduledForActivatedAt"] as? Date
     }
 
@@ -115,6 +123,7 @@ public struct LibreLoopCGMManagerState: RawRepresentable, Equatable {
             raw["experimentalMinuteByMinuteForwarding"] = true
         }
         raw["wearDurationMinutes"] = wearDurationMinutes
+        raw["generation"] = generation.map { Int($0) }
         raw["expiryAlertsScheduledForActivatedAt"] = expiryAlertsScheduledForActivatedAt
         return raw
     }

@@ -44,6 +44,9 @@ public final class LibreLoopPairingService {
         /// Distinguishes Libre 3 (14-day) from Libre 3 Plus (15-day) and
         /// any future variants without hardcoding sensor-family durations.
         public let wearDurationMinutes: Int?
+        /// NFC patch-info `generation` field (bytes 4–5). 0 = Libre 3,
+        /// 1 = Libre 3 Plus / Instinct. Direct sensor-family discriminator.
+        public let generation: UInt16?
     }
 
     public struct PairOutcomeMetadata: Sendable {
@@ -300,23 +303,14 @@ public final class LibreLoopPairingService {
             switch mode {
             case .fresh:
                 let freshID = UInt32.random(in: 1...UInt32.max)
-                // Auto-recover: if the sensor is already activated and we
-                // have a stored receiverID in Keychain for its serial, the
-                // NFC reader will issue switchReceiver with the stored ID
-                // instead of failing. Capture which ID actually got used.
-                let actualReceiverID = ReceiverIDBox(initial: freshID)
-                scanResult = try await nfcReader.scan(
-                    activateReceiverID: freshID,
-                    recoverReceiverIDForSerial: { serial in
-                        guard let keys = try? LibreLoopKeychain.load(forSensorSerial: serial),
-                              let stored = keys.receiverID else {
-                            return nil
-                        }
-                        actualReceiverID.value = stored
-                        return stored
-                    }
-                )
-                receiverID = actualReceiverID.value
+                // activateOrSwitchReceiver picks the right NFC command based
+                // on the sensor's state byte: activate if the sensor is still
+                // in the factory state, switchReceiver if it's already paired.
+                // This handles the common case of re-scanning a sensor that
+                // this app previously activated. For recovery with a known
+                // receiverID from a different source use .recovery(receiverID:).
+                scanResult = try await nfcReader.scan(mode: .activateOrSwitchReceiver(receiverID: freshID))
+                receiverID = freshID
             case .recovery(let id):
                 receiverID = id
                 scanResult = try await nfcReader.scan(mode: .switchReceiver(receiverID: id, timeSeconds: nil))
@@ -343,7 +337,8 @@ public final class LibreLoopPairingService {
             bleAddress: activation.bleAddressDisplay,
             blePIN: activation.blePIN,
             activatedAt: nil,
-            wearDurationMinutes: Int(scanResult.patchInfo.wearDurationMinutes)
+            wearDurationMinutes: Int(scanResult.patchInfo.wearDurationMinutes),
+            generation: scanResult.patchInfo.generation
         )
         onNFCResponse(nfcResponse)
 
@@ -477,12 +472,3 @@ public final class LibreLoopPairingService {
 /// Reference cell for capturing which receiverID the NFC reader ended up
 /// using, since the recovery lookup closure can override the caller's
 /// initial guess at scan time.
-private final class ReceiverIDBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _value: UInt32
-    init(initial: UInt32) { _value = initial }
-    var value: UInt32 {
-        get { lock.lock(); defer { lock.unlock() }; return _value }
-        set { lock.lock(); _value = newValue; lock.unlock() }
-    }
-}

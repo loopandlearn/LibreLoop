@@ -2,7 +2,6 @@ import SwiftUI
 
 struct LibreLoopRecoveryView: View {
     let onContinue: (UInt32) -> Void
-    let onCancel: () -> Void
 
     @State private var receiverIDInput: String = ""
     @State private var validationError: String?
@@ -31,7 +30,7 @@ struct LibreLoopRecoveryView: View {
                             .textInputAutocapitalization(.never)
                             .monospaced()
                             .onChange(of: receiverIDInput) { _, _ in validationError = nil }
-                        Text("Example: `78563412`. In the LibreCR PoC app this is the value after the `/` in `displayString`.")
+                        Text("Example: `78563412`. If this sensor was paired with this app before, the value is shown as \"Receiver ID\" in the Debug Info section of the Libre 3 CGM settings page.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                         if let validationError {
@@ -40,6 +39,11 @@ struct LibreLoopRecoveryView: View {
                                 .foregroundStyle(.red)
                         }
                     }
+
+                    Text("The receiver ID is assigned by Loop when it first pairs a sensor. It's saved in this app and shown on the Libre 3 settings page — write it down if you want to re-pair this sensor after reinstalling Loop.")
+                        .font(.footnote)
+                        .italic()
+                        .foregroundStyle(.secondary)
 
                     Spacer(minLength: 16)
                 }
@@ -58,11 +62,6 @@ struct LibreLoopRecoveryView: View {
         }
         .navigationTitle("Recovery")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel", action: onCancel)
-            }
-        }
     }
 
     private func tryContinue() {

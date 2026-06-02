@@ -40,17 +40,26 @@ final class LibreLoopUICoordinator: UINavigationController, CGMManagerOnboarding
             onShowHelp: { [weak self] in self?.presentApplyHelp() },
             onCancel: { [weak self] in self?.cancelOnboarding() }
         )
-        return DismissibleHostingController(content: view, colorPalette: colorPalette)
+        let vc = DismissibleHostingController(content: view, colorPalette: colorPalette)
+        // Use only the chevron on the next screen's back button so it
+        // doesn't mid-push swap "FreeStyle Libre 3" -> "Back".
+        vc.navigationItem.backButtonDisplayMode = .minimal
+        return vc
     }
 
     private func pushScanSensorView() {
         let view = LibreLoopScanSensorView(
             onScan: { [weak self] in self?.startScan(mode: .fresh) },
             onShowHelp: { [weak self] in self?.presentScanHelp() },
-            onShowRecovery: { [weak self] in self?.pushRecoveryView() },
-            onCancel: { [weak self] in self?.cancelOnboarding() }
+            onShowRecovery: { [weak self] in self?.pushRecoveryView() }
         )
         let vc = DismissibleHostingController(content: view, colorPalette: colorPalette)
+        // SwiftUI's .navigationTitle propagates to navigationItem.title
+        // only on the next update cycle, which lands after the push
+        // animation begins -- the title pops in late. Setting it on the
+        // VC at creation makes it present from the start of the push.
+        vc.title = "FreeStyle Libre 3"
+        vc.navigationItem.backButtonDisplayMode = .minimal
         pushViewController(vc, animated: true)
     }
 
@@ -58,10 +67,10 @@ final class LibreLoopUICoordinator: UINavigationController, CGMManagerOnboarding
         let view = LibreLoopRecoveryView(
             onContinue: { [weak self] receiverID in
                 self?.startScan(mode: .recovery(receiverID: receiverID))
-            },
-            onCancel: { [weak self] in self?.cancelOnboarding() }
+            }
         )
         let vc = DismissibleHostingController(content: view, colorPalette: colorPalette)
+        vc.title = "Recovery"
         pushViewController(vc, animated: true)
     }
 
@@ -169,6 +178,8 @@ final class LibreLoopUICoordinator: UINavigationController, CGMManagerOnboarding
             onCancel: { [weak self] in self?.cancelReplacement() }
         )
         let vc = DismissibleHostingController(content: view, colorPalette: colorPalette)
+        vc.title = "FreeStyle Libre 3"
+        vc.navigationItem.backButtonDisplayMode = .minimal
         pushViewController(vc, animated: true)
     }
 
@@ -176,10 +187,11 @@ final class LibreLoopUICoordinator: UINavigationController, CGMManagerOnboarding
         let view = LibreLoopScanSensorView(
             onScan: { [weak self] in self?.startReplacementScan(mode: .fresh) },
             onShowHelp: { [weak self] in self?.presentScanHelp() },
-            onShowRecovery: { [weak self] in self?.pushReplacementRecoveryView() },
-            onCancel: { [weak self] in self?.cancelReplacement() }
+            onShowRecovery: { [weak self] in self?.pushReplacementRecoveryView() }
         )
         let vc = DismissibleHostingController(content: view, colorPalette: colorPalette)
+        vc.title = "FreeStyle Libre 3"
+        vc.navigationItem.backButtonDisplayMode = .minimal
         pushViewController(vc, animated: true)
     }
 
@@ -187,10 +199,10 @@ final class LibreLoopUICoordinator: UINavigationController, CGMManagerOnboarding
         let view = LibreLoopRecoveryView(
             onContinue: { [weak self] receiverID in
                 self?.startReplacementScan(mode: .recovery(receiverID: receiverID))
-            },
-            onCancel: { [weak self] in self?.cancelReplacement() }
+            }
         )
         let vc = DismissibleHostingController(content: view, colorPalette: colorPalette)
+        vc.title = "Recovery"
         pushViewController(vc, animated: true)
     }
 

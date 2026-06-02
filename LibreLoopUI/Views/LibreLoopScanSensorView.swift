@@ -4,7 +4,6 @@ struct LibreLoopScanSensorView: View {
     let onScan: () -> Void
     let onShowHelp: () -> Void
     let onShowRecovery: () -> Void
-    let onCancel: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -58,10 +57,5 @@ struct LibreLoopScanSensorView: View {
         }
         .navigationTitle("FreeStyle Libre 3")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel", action: onCancel)
-            }
-        }
     }
 }

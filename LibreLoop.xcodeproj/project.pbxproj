@@ -30,6 +30,7 @@
 		8826F317E30CFA27B8D1B531 /* LibreCRKit in Frameworks */ = {isa = PBXBuildFile; productRef = 3BCF8A4D19616F87A259E2A7 /* LibreCRKit */; };
 		8DC93AFF5F34A0AA0F038227 /* phone_cert_162b.bin in Resources */ = {isa = PBXBuildFile; fileRef = 56F71C37682F841B83230171 /* phone_cert_162b.bin */; };
 		BBFA712380AAB1FC572D3EFE /* FSL3-sensor.png in Resources */ = {isa = PBXBuildFile; fileRef = BBFA712375B13A9543390BC5 /* FSL3-sensor.png */; };
+		BBFA712680AAB1FC572D3F00 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BBFA712575B13A9543390BC7 /* Assets.xcassets */; };
 		9137EBA4DC7FD73B578C6D33 /* LibreLoopRecoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98F6F316D7DD35C1D94191DD /* LibreLoopRecoveryView.swift */; };
 		CCD413A480AAB1FC572D3EFE /* LibreLoopSampleDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCD413A475B13A9543390BC5 /* LibreLoopSampleDetailView.swift */; };
 		92428FA387488BD4EDFBF83D /* LibreLoopLifecycleBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56336E1AA92D6D8AD1335F44 /* LibreLoopLifecycleBar.swift */; };
@@ -115,6 +116,7 @@
 		56336E1AA92D6D8AD1335F44 /* LibreLoopLifecycleBar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LibreLoopLifecycleBar.swift; sourceTree = "<group>"; };
 		56F71C37682F841B83230171 /* phone_cert_162b.bin */ = {isa = PBXFileReference; includeInIndex = 1; path = phone_cert_162b.bin; sourceTree = "<group>"; };
 		BBFA712375B13A9543390BC5 /* FSL3-sensor.png */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = image.png; path = "FSL3-sensor.png"; sourceTree = "<group>"; };
+		BBFA712575B13A9543390BC7 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		587A685A26D1B17F7DC3D2BA /* LibreLoopCGMManager+Pairing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = "LibreLoopCGMManager+Pairing.swift"; sourceTree = "<group>"; };
 		5D9713A2EE7BAA3A52EC4ADF /* LibreLoopTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LibreLoopTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		651E3C856170F6BD369EA0DD /* README.md */ = {isa = PBXFileReference; includeInIndex = 1; path = README.md; sourceTree = "<group>"; };
@@ -221,6 +223,7 @@
 			isa = PBXGroup;
 			children = (
 				BBFA712375B13A9543390BC5 /* FSL3-sensor.png */,
+				BBFA712575B13A9543390BC7 /* Assets.xcassets */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -545,6 +548,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				BBFA712380AAB1FC572D3EFE /* FSL3-sensor.png in Resources */,
+				BBFA712680AAB1FC572D3F00 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1008,7 +1012,7 @@
 			repositoryURL = "https://github.com/airedev326/LibreCRKit.git";
 			requirement = {
 				kind = revision;
-				revision = 45a892d46e1e86d893db18a9f79be5ac6ac0ef3f;
+				revision = 88508ae45304ce87d15de3df314fb62e939578d9;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */

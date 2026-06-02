@@ -6,19 +6,19 @@ struct LibreLoopScanHelpPagerView: View {
     private let steps: [HelpStep] = [
         HelpStep(
             title: "STEP 1",
-            symbol: "iphone.gen3.radiowaves.left.and.right",
+            image: .systemSymbol("iphone.gen3.radiowaves.left.and.right"),
             body: "Hold the BACK of your phone against the sensor.",
             note: nil
         ),
         HelpStep(
             title: "STEP 2",
-            symbol: "hand.raised.fill",
+            image: .systemSymbol("hand.raised.fill"),
             body: "Keep the phone still. Pairing takes a few seconds.",
             note: "If your phone moves away, the scan will fail and you'll need to try again."
         ),
         HelpStep(
             title: "STEP 3",
-            symbol: "checkmark.seal.fill",
+            image: .systemSymbol("checkmark.seal.fill"),
             body: "Your phone will vibrate when pairing succeeds.",
             note: nil
         )

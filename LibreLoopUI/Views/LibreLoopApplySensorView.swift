@@ -9,11 +9,7 @@ struct LibreLoopApplySensorView: View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(spacing: 24) {
-                    Image(systemName: "figure.arms.open")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(height: 140)
-                        .foregroundStyle(.tint)
+                    heroImage
                         .padding(.top, 32)
 
                     Text("Apply a new Sensor")
@@ -56,6 +52,32 @@ struct LibreLoopApplySensorView: View {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel", action: onCancel)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var heroImage: some View {
+        if let uiImage = UIImage(named: "ApplySensorStep1",
+                                 in: Bundle(for: LibreLoopSettingsViewModel.self),
+                                 compatibleWith: nil) {
+            // Light card behind the illustration so the transparent
+            // SVG reads in dark mode.
+            Image(uiImage: uiImage)
+                .resizable()
+                .scaledToFit()
+                .frame(height: 230)
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color(white: 0.97))
+                )
+                .padding(.horizontal, 12)
+        } else {
+            Image(systemName: "figure.arms.open")
+                .resizable()
+                .scaledToFit()
+                .frame(height: 140)
+                .foregroundStyle(.tint)
         }
     }
 }

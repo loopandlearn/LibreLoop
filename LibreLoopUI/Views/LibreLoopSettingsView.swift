@@ -3,6 +3,7 @@ import LibreLoop
 
 struct LibreLoopSettingsView: View {
     @ObservedObject var viewModel: LibreLoopSettingsViewModel
+    @ObservedObject private var logger = LibreLoopFileLogger.shared
     let didFinish: () -> Void
     let replaceSensor: () -> Void
     let deleteCGM: () -> Void
@@ -11,6 +12,17 @@ struct LibreLoopSettingsView: View {
     @State private var confirmingReplace = false
     @State private var showingAllReadings = false
     @State private var showingMinuteByMinuteWarning = false
+    @State private var activityFilter: ActivityFilter = .all
+    @State private var showingAllActivity = false
+    @State private var copyToast: String?
+
+    enum ActivityFilter: String, CaseIterable, Identifiable {
+        case all = "All"
+        case ble = "BLE"
+        case clinical = "Clinical"
+        case reconnect = "Reconnect"
+        var id: String { rawValue }
+    }
 
     var body: some View {
         List {
@@ -20,6 +32,7 @@ struct LibreLoopSettingsView: View {
             recentReadingsSection
             debugInfoSection
             forwardingSection
+            activitySection
             deleteSection
         }
         .navigationTitle("FreeStyle Libre 3")
@@ -224,6 +237,96 @@ struct LibreLoopSettingsView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// Recent activity feed sourced from the in-memory ring buffer in
+    /// LibreLoopFileLogger. This is the same content that lands in the
+    /// rolling file at `libreloop/log.txt` and in os_log, just exposed
+    /// in the UI so a user in the field can copy a slice into chat
+    /// without USB or Console.app.
+    @ViewBuilder
+    private var activitySection: some View {
+        let filtered = filteredLines
+        Section("Recent Activity") {
+            Picker("Filter", selection: $activityFilter) {
+                ForEach(ActivityFilter.allCases) { f in
+                    Text(f.rawValue).tag(f)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if filtered.isEmpty {
+                Text(activityFilter == .all
+                     ? "No activity logged yet."
+                     : "No activity matching this filter.")
+                    .foregroundStyle(.secondary)
+                    .font(.footnote)
+            } else {
+                let visible = showingAllActivity ? filtered : Array(filtered.suffix(12))
+                ForEach(Array(visible.enumerated()), id: \.offset) { _, line in
+                    Text(formatLineForDisplay(line))
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .lineLimit(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if filtered.count > 12 {
+                    Button(showingAllActivity ? "Show fewer" : "Show all \(filtered.count)") {
+                        showingAllActivity.toggle()
+                    }
+                    .font(.footnote)
+                }
+                HStack {
+                    Button {
+                        copyActivity(filtered)
+                    } label: {
+                        Label("Copy log", systemImage: "doc.on.doc")
+                    }
+                    .font(.footnote)
+                    Spacer()
+                    if let toast = copyToast {
+                        Text(toast)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .transition(.opacity)
+                    }
+                }
+            }
+        }
+    }
+
+    private var filteredLines: [String] {
+        switch activityFilter {
+        case .all:
+            return logger.recentLines
+        case .ble:
+            return logger.recentLines.filter { $0.contains("ble:") || $0.contains("reconnect:") }
+        case .clinical:
+            return logger.recentLines.filter { $0.contains("clinical ") }
+        case .reconnect:
+            return logger.recentLines.filter { $0.contains("reconnect:") || $0.contains("BLE connect failed") || $0.contains("BLE timeout") }
+        }
+    }
+
+    /// Strip the `[file.swift:42]` source tag for on-screen display --
+    /// the file location is just noise when scanning activity, and the
+    /// timestamp + message is what's useful. The tag stays intact when
+    /// you Copy log so re_abbot's tooling can still parse it.
+    private func formatLineForDisplay(_ line: String) -> String {
+        guard let close = line.firstIndex(of: "]") else { return line }
+        let afterTag = line.index(after: close)
+        let trimmed = line[afterTag...].drop(while: { $0 == " " })
+        return String(trimmed)
+    }
+
+    private func copyActivity(_ lines: [String]) {
+        let joined = lines.joined(separator: "\n")
+        UIPasteboard.general.string = joined
+        withAnimation { copyToast = "Copied \(lines.count) lines" }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            withAnimation { if copyToast != nil { copyToast = nil } }
         }
     }
 

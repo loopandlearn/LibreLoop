@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import os.log
 
 /// Plain-text rolling log file written into the host app's Documents
@@ -8,12 +9,18 @@ import os.log
 /// Console.app. Bytes are capped per file and a single `.1` rotation
 /// keeps roughly twice the cap on disk.
 ///
+/// Also keeps an in-memory ring buffer (`recentLines`) so the CGM
+/// Manager UI can show recent activity without anyone having to read
+/// the file or stream syslog -- useful in the field when USB isn't
+/// available.
+///
 /// All writes are serialized on a dedicated queue so callers can fire
 /// from any thread.
-public final class LibreLoopFileLogger: @unchecked Sendable {
+public final class LibreLoopFileLogger: ObservableObject, @unchecked Sendable {
     public static let shared = LibreLoopFileLogger()
 
     private static let maxBytes = 512 * 1024
+    private static let maxMemoryLines = 400
     private static let dirName = "libreloop"
     private static let fileName = "log.txt"
 
@@ -28,21 +35,43 @@ public final class LibreLoopFileLogger: @unchecked Sendable {
     private var bytesWritten: Int = 0
     private var fileURL: URL?
 
+    /// Recent log lines for the in-app activity view. Always mutated on
+    /// the main thread so SwiftUI can observe directly.
+    @Published public private(set) var recentLines: [String] = []
+
     private init() {
         queue.async { [weak self] in self?.openIfNeeded() }
     }
 
     public func append(_ line: String) {
-        let stamped = "\(isoFormatter.string(from: Date())) \(line)\n"
+        let stamped = "\(isoFormatter.string(from: Date())) \(line)"
         queue.async { [weak self] in
             guard let self else { return }
             self.openIfNeeded()
-            guard let handle = self.handle, let data = stamped.data(using: .utf8) else { return }
+            guard let handle = self.handle, let data = (stamped + "\n").data(using: .utf8) else { return }
             handle.write(data)
             self.bytesWritten += data.count
             if self.bytesWritten >= Self.maxBytes {
                 self.rotate()
             }
+        }
+        appendToMemoryBuffer(stamped)
+    }
+
+    private func appendToMemoryBuffer(_ stamped: String) {
+        if Thread.isMainThread {
+            applyMemoryBufferAppend(stamped)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.applyMemoryBufferAppend(stamped)
+            }
+        }
+    }
+
+    private func applyMemoryBufferAppend(_ stamped: String) {
+        recentLines.append(stamped)
+        if recentLines.count > Self.maxMemoryLines {
+            recentLines.removeFirst(recentLines.count - Self.maxMemoryLines)
         }
     }
 

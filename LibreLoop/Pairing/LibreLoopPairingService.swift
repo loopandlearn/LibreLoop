@@ -456,7 +456,9 @@ public final class LibreLoopPairingService {
     // the scanner deliberately doesn't take a position on timeouts.
 
     /// Suspend until the scanner reports `.poweredOn`. Throws on a
-    /// terminal state (poweredOff, unauthorized, unsupported).
+    /// terminal state (poweredOff, unauthorized, unsupported), or
+    /// propagates CancellationError if the surrounding Task is
+    /// cancelled before the state settles.
     static func awaitReady(scanner: SensorScannerNG) async throws {
         if let immediate = stateOutcome(scanner.centralState) {
             switch immediate {
@@ -466,12 +468,30 @@ public final class LibreLoopPairingService {
             }
         }
         for await event in scanner.events() {
+            try Task.checkCancellation()
             if case .stateChanged(let s) = event, let outcome = stateOutcome(s) {
                 switch outcome {
                 case .ready: return
                 case .error(let e): throw e
                 case .pending: continue
                 }
+            }
+        }
+        // for-await exited without a usable .stateChanged event. Three
+        // possibilities, in order:
+        //   1. Surrounding Task was cancelled -- propagate that.
+        //   2. central settled between the head snapshot and the
+        //      subscription (less likely now that events() replays the
+        //      current state, but still possible if state flips twice
+        //      in a tight window) -- re-check and act.
+        //   3. The events() stream actually finished (scanner being
+        //      torn down) -- fall back to .bluetoothUnavailable.
+        try Task.checkCancellation()
+        if let outcome = stateOutcome(scanner.centralState) {
+            switch outcome {
+            case .ready: return
+            case .error(let e): throw e
+            case .pending: break
             }
         }
         throw SensorScannerError.bluetoothUnavailable

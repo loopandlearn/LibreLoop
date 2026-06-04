@@ -39,6 +39,17 @@ public final class LibreLoopCGMManager: CGMManager {
     /// the link, which fires didDisconnect, which schedules the next
     /// attempt. CB itself handles the wait-for-reachability.
     var reconnectAttempt: Task<Void, Never>?
+    /// Wall-clock time we last spawned a reconnect Task. Used by
+    /// scheduleReconnect to coalesce bursts of CB events (e.g., a
+    /// flapping link can emit 4+ didDisconnect / didFailToConnect
+    /// events within 100ms) into a single attempt -- without this we'd
+    /// rapidly cancel and respawn Tasks for every event in the burst.
+    var lastReconnectAttemptStartedAt: Date?
+    /// Minimum wall-clock interval between consecutive reconnect
+    /// attempts. CB's central.connect is idempotent on its own side, so
+    /// our rapid re-calls weren't helping iOS reconnect any faster -- they
+    /// were just churning Task lifecycle and the BLE stack.
+    static let minReconnectInterval: TimeInterval = 0.5
 
     /// Pure BLE connection state. Does NOT incorporate data-freshness
     /// signals; those belong in the lifecycle bar / Last Reading card so
@@ -205,6 +216,23 @@ public final class LibreLoopCGMManager: CGMManager {
         isReconnecting = false
         recentSamples = []
         retractExpiryAlerts()
+        // Emit .sensorEnd before we blank state so the event's
+        // deviceIdentifier still resolves to the session that's ending.
+        // Matches the .sensorStart we emitted at pairing time so Loop's
+        // CgmEventStore has a clean session boundary.
+        if let serial = state.sensorSerial {
+            let identifier = Self.deviceIdentifier(serial: serial, receiverID: state.receiverID)
+            let event = PersistedCgmEvent(
+                date: Date(),
+                type: .sensorEnd,
+                deviceIdentifier: identifier
+            )
+            llog("emitting CgmEvent .sensorEnd deviceIdentifier=\(identifier)")
+            delegateQueue?.async { [weak self] in
+                guard let self else { return }
+                self.cgmManagerDelegate?.cgmManager(self, hasNew: [event])
+            }
+        }
         var blank = state
         blank.receiverID = nil
         blank.sensorSerial = nil
@@ -354,9 +382,18 @@ public final class LibreLoopCGMManager: CGMManager {
             }
         case .didConnect(let p):
             llog("ble: didConnect \(p.identifier.uuidString)")
-            // didConnect is a hint to (re)attempt the handshake if we
-            // were waiting. scheduleReconnect is idempotent.
-            if p.identifier == self.state.peripheralID {
+            // didConnect is exactly the moment to spawn the handshake
+            // -- bypass the burst-debounce window so a peripheral that
+            // pops back into range mid-debounce doesn't sit connected
+            // with nothing driving the handshake. Skip entirely if a
+            // handshake Task is already in flight: the in-flight Task
+            // is using connectAndBuildSession which observes its own
+            // events stream, and calling scheduleReconnect again here
+            // is pure noise (and historically participated in a
+            // central.connect re-fire loop during the handshake
+            // window).
+            if p.identifier == self.state.peripheralID, self.reconnectAttempt == nil {
+                self.lastReconnectAttemptStartedAt = nil
                 self.scheduleReconnect()
             }
         case .didFailToConnect(let p, let err):

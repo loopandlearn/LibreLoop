@@ -110,7 +110,48 @@ extension LibreLoopCGMManager {
         newState.firstReadingAt = nil
         setState(newState)
 
+        emitSensorStartEvent(for: newState)
+
         adopt(monitor: outcome.monitor)
+    }
+
+    /// Tell Loop's `CgmEventStore` that a new sensor session began. Mirrors
+    /// the G7CGMManager pattern -- a `.sensorStart` event lets Loop's
+    /// sensor-history view and retrospective analysis attribute glucose
+    /// data to a specific sensor session. Without it, Loop has no record
+    /// of when the Libre 3 session began other than inference from the
+    /// first sample timestamp.
+    ///
+    /// `deviceIdentifier` is formatted as `<sensorSerial>:<receiverIDHex>`
+    /// so a single sensor paired against different receivers produces
+    /// distinct events.
+    private func emitSensorStartEvent(for newState: LibreLoopCGMManagerState) {
+        guard let serial = newState.sensorSerial, let activatedAt = newState.activatedAt else { return }
+        let identifier = Self.deviceIdentifier(serial: serial, receiverID: newState.receiverID)
+        let lifetime = newState.wearDurationMinutes.map { TimeInterval($0) * 60 }
+            ?? LibreLoopSensorLifecycle.activeDuration
+        let warmup = newState.warmupDurationMinutes.map { TimeInterval($0) * 60 }
+            ?? LibreLoopSensorLifecycle.warmupDuration
+        let event = PersistedCgmEvent(
+            date: activatedAt,
+            type: .sensorStart,
+            deviceIdentifier: identifier,
+            expectedLifetime: lifetime,
+            warmupPeriod: warmup
+        )
+        llog("emitting CgmEvent .sensorStart deviceIdentifier=\(identifier) activatedAt=\(activatedAt)")
+        delegateQueue?.async { [weak self] in
+            guard let self else { return }
+            self.cgmManagerDelegate?.cgmManager(self, hasNew: [event])
+        }
+    }
+
+    /// `<sensorSerial>:<receiverIDHex>` -- matches the existing settings-view
+    /// formatting so the on-screen "Receiver ID" debug row and the
+    /// CgmEvent identifier are derivable from each other.
+    static func deviceIdentifier(serial: String, receiverID: Data?) -> String {
+        let hex = (receiverID ?? Data()).map { String(format: "%02x", $0) }.joined()
+        return hex.isEmpty ? serial : "\(serial):\(hex)"
     }
 
     func adopt(monitor: LibreLoopSensorMonitor) {
@@ -125,9 +166,6 @@ extension LibreLoopCGMManager {
             onStatus: { [weak self] text in self?.updateStatusDetail(text) },
             onHistoricalPage: { [weak self] page in self?.handleHistoricalPage(page) },
             onClinicalRecord: { [weak self] record in self?.handleClinicalRecord(record) },
-            onEmbeddedHistorical: { [weak self] lifeCount, mgdl in
-                self?.handleEmbeddedHistorical(lifeCount: lifeCount, mgdl: mgdl)
-            },
             onPatchStatus: { [weak self] status in self?.handlePatchStatus(status) },
             onLifeCount: { [weak self] lifeCount in self?.handleLifeCount(lifeCount) }
         )
@@ -515,29 +553,57 @@ extension LibreLoopCGMManager {
         }
     }
 
-    /// Forward the 5-min historical sample that the sensor pairs with
-    /// every realtime glucose packet. Doing this continuously keeps the
-    /// historical buffer aligned to "now minus ~17 min" without needing
-    /// any post-reconnect re-request — the next session's disconnect
-    /// window is the only gap a dedicated history backfill needs to
-    /// cover. Pattern mirrors Juggluco's `saveLibre3Historyel` call on
-    /// every 1-min glucose packet (and DiaBLE's
-    /// `mergeHistoricSamples` from live packets).
-    ///
-    /// Fired on every realtime tick, so the dedup gate matters: the
-    /// embedded historical sample only advances every 5 lifeCounts, so
-    /// 4 of every 5 calls land in the backfill-dup early return.
-    func handleEmbeddedHistorical(lifeCount: UInt16, mgdl: UInt16) {
-        guard let activatedAt = state.activatedAt else { return }
-        if backfillForwardedLifeCounts.contains(lifeCount) { return }
-        // Realtime carries its own current-minute lifeCount; the
-        // embedded historical's lifeCount is always older than (and
-        // distinct from) any realtime lifeCount we've seen, so a
-        // realtime-dup check would only trigger if the user briefly
-        // disabled the embedded path. Cheap to include for safety.
-        if recentSamples.contains(where: { $0.lifeCount == lifeCount }) { return }
-
+    /// Forward a single per-minute glucose sample from a clinical-stream
+    /// record. The historical stream only persists 5-min boundary samples
+    /// so it can't fill the per-minute gaps left by a disconnect; clinical
+    /// records carry the current-minute reading at `record.lifeCount`,
+    /// which is exactly the granularity we want for gap-fill. Dedup is
+    /// the same two-layered check used for historical: skip if we already
+    /// have realtime or earlier-this-session backfill for that lifeCount.
+    func handleClinicalRecord(_ record: ClinicalReadingRecord) {
+        guard let activatedAt = state.activatedAt else {
+            llog("clinical record received before activatedAt known; deferring")
+            return
+        }
         let serial = state.sensorSerial ?? "unknown"
+        let realtimeLifeCounts = Set(recentSamples.map { $0.lifeCount })
+
+        // Forward only the per-minute `currentGlucoseMgDL` at
+        // `record.lifeCount`. Per upstream LibreCRKit guidance:
+        // `currentGlucose` is keyed at lifeCount (offset 0) and safe
+        // to plot at its own time, while `historicGlucoseRaw` is
+        // redundant with the historical samples embedded in realtime
+        // frames and shouldn't be keyed at this record's lifeCount.
+        // Pass-2 historical backfill (22 min post-reconnect) covers
+        // the gap between paged-historical and realtime resume.
+        if let mgdl = record.currentGlucoseMgDL {
+            forwardClinicalSample(
+                mgdl: mgdl,
+                lifeCount: record.lifeCount,
+                kind: "current",
+                serial: serial,
+                activatedAt: activatedAt,
+                realtimeLifeCounts: realtimeLifeCounts
+            )
+        }
+    }
+
+    private func forwardClinicalSample(
+        mgdl: UInt16,
+        lifeCount: UInt16,
+        kind: String,
+        serial: String,
+        activatedAt: Date,
+        realtimeLifeCounts: Set<UInt16>
+    ) {
+        if realtimeLifeCounts.contains(lifeCount) {
+            llog("clinical \(kind) at lifeCount=\(lifeCount) dropped: realtime-dup")
+            return
+        }
+        if backfillForwardedLifeCounts.contains(lifeCount) {
+            llog("clinical \(kind) at lifeCount=\(lifeCount) dropped: backfill-dup")
+            return
+        }
         let date = activatedAt.addingTimeInterval(TimeInterval(lifeCount) * 60)
         let sample = NewGlucoseSample(
             date: date,
@@ -552,62 +618,7 @@ extension LibreLoopCGMManager {
             device: device
         )
         backfillForwardedLifeCounts.insert(lifeCount)
-        // Advance the historical watermark so reconnect backfill only
-        // covers the genuine outage window. Mirrors the bump in
-        // `handleHistoricalPage`.
-        var updated = state
-        let priorWatermark = updated.lastHistoricalLifeCount ?? 0
-        if lifeCount > priorWatermark {
-            updated.lastHistoricalLifeCount = lifeCount
-            setState(updated)
-        }
-        llog("forwarded embedded historical sample to Loop: \(mgdl) mg/dL lifeCount=\(lifeCount) sampleDate=\(date.timeIntervalSince1970)")
-        delegateQueue?.async { [weak self] in
-            guard let self else { return }
-            self.cgmManagerDelegate?.cgmManager(self, hasNew: .newData([sample]))
-        }
-    }
-
-    /// Forward a single per-minute glucose sample from a clinical-stream
-    /// record. The historical stream only persists 5-min boundary samples
-    /// so it can't fill the per-minute gaps left by a disconnect; clinical
-    /// records carry the current-minute reading at `record.lifeCount`,
-    /// which is exactly the granularity we want for gap-fill. Dedup is
-    /// the same two-layered check used for historical: skip if we already
-    /// have realtime or earlier-this-session backfill for that lifeCount.
-    func handleClinicalRecord(_ record: ClinicalReadingRecord) {
-        guard let activatedAt = state.activatedAt else {
-            llog("clinical record received before activatedAt known; deferring")
-            return
-        }
-        guard let mgdl = record.currentGlucoseMgDL else { return }
-        let serial = state.sensorSerial ?? "unknown"
-
-        let realtimeLifeCounts = Set(recentSamples.map { $0.lifeCount })
-        if realtimeLifeCounts.contains(record.lifeCount) {
-            llog("clinical record at lifeCount=\(record.lifeCount) dropped: realtime-dup")
-            return
-        }
-        if backfillForwardedLifeCounts.contains(record.lifeCount) {
-            llog("clinical record at lifeCount=\(record.lifeCount) dropped: backfill-dup")
-            return
-        }
-
-        let date = activatedAt.addingTimeInterval(TimeInterval(record.lifeCount) * 60)
-        let sample = NewGlucoseSample(
-            date: date,
-            quantity: LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: Double(mgdl)),
-            condition: nil,
-            trend: nil,
-            trendRate: nil,
-            isDisplayOnly: false,
-            wasUserEntered: false,
-            syncIdentifier: "libreloop-bkfill-\(serial)-\(record.lifeCount)",
-            syncVersion: 1,
-            device: device
-        )
-        backfillForwardedLifeCounts.insert(record.lifeCount)
-        llog("forwarded clinical sample to Loop: \(mgdl) mg/dL lifeCount=\(record.lifeCount) sampleDate=\(date.timeIntervalSince1970)")
+        llog("forwarded clinical \(kind) sample to Loop: \(mgdl) mg/dL lifeCount=\(lifeCount) sampleDate=\(date.timeIntervalSince1970)")
         delegateQueue?.async { [weak self] in
             guard let self else { return }
             self.cgmManagerDelegate?.cgmManager(self, hasNew: .newData([sample]))
@@ -648,9 +659,37 @@ extension LibreLoopCGMManager {
             llog("reconnect: no saved state; not scheduling")
             return
         }
+        // (Re-)arm the CB connect intent first, before any debounce.
+        // We should NEVER sit "disconnected with no CB intent
+        // pending" -- otherwise the peripheral returning to range
+        // generates no callback. BUT only call requestConnect when
+        // the peripheral isn't already .connected/.connecting:
+        // calling central.connect on an already-connected peripheral
+        // on iOS empirically re-fires didConnect, and since our
+        // didConnect handler calls scheduleReconnect, that produces a
+        // tight loop bounded only by `monitor == nil`. Field log
+        // captured 3228 didConnect events in 1 second during the
+        // ~2.2s handshake window because of this.
+        if let peripheralID = state.peripheralID,
+           let peripheral = scanner.retrievePeripherals(withIdentifiers: [peripheralID]).first,
+           peripheral.state != .connected, peripheral.state != .connecting {
+            scanner.requestConnect(peripheral)
+        }
         guard reconnectAttempt == nil else {
             return
         }
+        // Burst-debounce: when CB emits a flurry of disconnect events
+        // (link flapping out of range), we'd otherwise schedule one
+        // handshake Task per event. The CB connect intent we just
+        // re-armed above is enough -- iOS will fire didConnect when
+        // the peripheral comes back, and the listener will trigger a
+        // fresh scheduleReconnect at that point. Coalescing the burst
+        // means we don't churn Task lifecycle in the meantime.
+        let now = Date()
+        if let last = lastReconnectAttemptStartedAt, now.timeIntervalSince(last) < Self.minReconnectInterval {
+            return
+        }
+        lastReconnectAttemptStartedAt = now
         llog("reconnect: scheduling attempt")
         isReconnecting = true
         let scanner = self.scanner
@@ -662,24 +701,33 @@ extension LibreLoopCGMManager {
                 self.isReconnecting = false
                 self.reconnectAttempt = nil
             }
-            // If we didn't adopt a monitor, ask CB to drop the link so
-            // didDisconnect will fire and trigger the next attempt. If
-            // the peer was already disconnected, this is a no-op and
-            // we re-arm via scheduleReconnect directly to avoid being
-            // stuck (no didDisconnect coming).
-            if await MainActor.run(body: { self.monitor == nil }) {
-                if let peripheralID,
-                   let peripheral = scanner.retrievePeripherals(withIdentifiers: [peripheralID]).first {
-                    scanner.cancelConnection(peripheral)
-                }
-                // Belt-and-braces: if no didDisconnect arrived (e.g.,
-                // peripheral was already disconnected), schedule another
-                // attempt directly. The same scheduleReconnect guard
-                // (reconnectAttempt == nil) keeps us from racing the
-                // disconnect-event-driven path.
-                await MainActor.run {
-                    self.scheduleReconnect()
-                }
+            // After a failed attempt we MUST end up in one of two
+            // safe states: (a) CB has a connect intent pending and
+            // we're waiting on it, or (b) a fresh handshake Task is
+            // in flight. NEVER "disconnected with nothing pending",
+            // which is the field-bug state -- PairingFlowError 7
+            // failed handshake, link already down, no CB event
+            // arriving to drive a retry, manager sat idle for 40
+            // minutes. CB events alone are NOT a sufficient retry
+            // trigger when the failure path doesn't go through CB.
+            guard await MainActor.run(body: { self.monitor == nil }) else { return }
+            if let peripheralID,
+               let peripheral = scanner.retrievePeripherals(withIdentifiers: [peripheralID]).first,
+               peripheral.state == .connected || peripheral.state == .connecting {
+                // Active link survived the handshake failure --
+                // drop it and let the resulting didDisconnect route
+                // through the events listener (which calls
+                // scheduleReconnect). Calling scheduleReconnect
+                // here too would be a duplicate within ms.
+                scanner.cancelConnection(peripheral)
+            } else {
+                // No active link, no in-flight Task, no CB event
+                // pending. Explicitly re-arm. scheduleReconnect
+                // always re-arms the CB connect intent at its top
+                // (idempotent), and its 0.5s debounce throttles
+                // Task spawning so this can't tight-loop with the
+                // events listener's own scheduleReconnect calls.
+                await MainActor.run { self.scheduleReconnect() }
             }
         }
     }

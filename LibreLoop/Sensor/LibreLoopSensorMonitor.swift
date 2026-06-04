@@ -283,8 +283,8 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
                 handler?(page)
             case .clinicalReadingRecord(let record):
                 let cur = record.currentGlucoseMgDL.map(String.init) ?? "nil"
-                let sm = record.smoothedGlucoseMgDL.map(String.init) ?? "nil"
-                llog("clinical record lifeCount=\(record.lifeCount) current=\(cur) mg/dL smoothed=\(sm) mg/dL @lifeCount=\(record.smoothedLifeCount)")
+                let hist = record.historicGlucoseMgDL.map(String.init) ?? "nil"
+                llog("clinical record lifeCount=\(record.lifeCount) current=\(cur) mg/dL historicRaw=\(hist) mg/dL")
                 lock.lock()
                 let handler = clinicalRecordHandler
                 lock.unlock()

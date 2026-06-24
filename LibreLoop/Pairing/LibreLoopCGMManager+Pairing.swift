@@ -351,11 +351,21 @@ extension LibreLoopCGMManager {
             updated.lastHistoricalLifeCount = sample.lifeCount
         }
         // Back-derive activation timestamp from the sensor's own age counter
-        // (lifeCount, minutes since activation). Only set it once -- later
-        // readings shouldn't shift it (small drift would otherwise jitter the
-        // lifecycle bar).
-        if updated.activatedAt == nil {
-            updated.activatedAt = sample.date.addingTimeInterval(-TimeInterval(sample.lifeCount) * 60)
+        // (lifeCount, minutes since activation), which is authoritative. Normally
+        // set once and left alone — later readings shouldn't shift it (small
+        // drift would otherwise jitter the lifecycle bar). But self-heal a large
+        // disagreement: a switch-receiver pairing that stamped activatedAt=now on
+        // an already-old sensor would otherwise show a false "warmup" / wrong
+        // expiry forever (it's non-nil, so the set-once branch never corrects it).
+        // The sensor's age wins when off by more than half an hour.
+        let derivedActivatedAt = sample.date.addingTimeInterval(-TimeInterval(sample.lifeCount) * 60)
+        if let current = updated.activatedAt {
+            if abs(current.timeIntervalSince(derivedActivatedAt)) > 30 * 60 {
+                llog("activatedAt correction: stored=\(current) derived=\(derivedActivatedAt) lifeCount=\(sample.lifeCount); trusting sensor age")
+                updated.activatedAt = derivedActivatedAt
+            }
+        } else {
+            updated.activatedAt = derivedActivatedAt
         }
         updated.expiryAlertsScheduledForActivatedAt = scheduleExpiryAlertsIfNeeded(
             activatedAt: updated.activatedAt,

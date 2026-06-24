@@ -349,19 +349,22 @@ public final class LibreLoopPairingService {
         // and (new) blePIN. Losing the blePIN after a successful A8 strands
         // the sensor until another A8 burns yet another PIN.
         //
-        // For .fresh mode, the sensor was just activated by us, so we know
-        // activatedAt = now to within a few seconds. Seed it so the lifecycle
-        // drops straight into .warmup once BLE pair completes instead of
-        // showing .initializing for the ~minute it takes the first realtime
-        // reading to arrive. The first reading (lifeCount 0 or 1) is then
-        // suppressed by the nil-guard in ingest(), avoiding any jitter.
-        //
-        // For .recovery (switch-receiver), the sensor was activated some
-        // unknown time ago; we still rely on the first reading's lifeCount.
+        // activatedAt == now is only true for a GENUINE activation (a factory
+        // sensor we just activated). `.fresh` maps to activate-or-switch, so it
+        // also covers switch-receiver of an already-active sensor — which was
+        // activated some unknown time ago, NOT now. Decide from the sensor's own
+        // state byte: only stamp now when the command was actually `.activate`.
+        // Otherwise leave it nil and back-derive from the first reading's
+        // lifeCount (same as `.recovery`), so a re-paired live sensor doesn't
+        // falsely show warmup. For a genuine activation the first reading
+        // (lifeCount 0 or 1) is suppressed by the nil-guard in ingest(),
+        // avoiding any jitter.
         let activatedAtFromNFC: Date?
         switch mode {
-        case .fresh:    activatedAtFromNFC = Date()
-        case .recovery: activatedAtFromNFC = nil
+        case .fresh:
+            activatedAtFromNFC = scanResult.patchInfo.recommendedCommandCode == .activate ? Date() : nil
+        case .recovery:
+            activatedAtFromNFC = nil
         }
         let nfcResponse = NFCResponse(
             receiverID: receiverID,

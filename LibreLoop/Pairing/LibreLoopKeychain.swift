@@ -122,6 +122,59 @@ enum LibreLoopKeychain {
             throw LibreLoopKeychainError.osStatus(status)
         }
     }
+
+    // MARK: - App-wide receiver identity
+    //
+    // The receiverID the sensor remembers as its current receiver. Unlike the
+    // per-serial session keys above, this is stored under a single fixed key so
+    // it's retrievable WITHOUT a sensor serial — exactly the situation after a
+    // CGMManager rawState wipe / plugin remove+re-add: you need the receiverID
+    // to issue the NFC switch-receiver, but you don't yet know the serial (you
+    // learn it from the scan). Persisting one stable identity lets pairing reuse
+    // it so a re-scanned sensor is switch-receiver'd with the ID it already
+    // remembers, instead of a fresh random one it would reject.
+    private static let appReceiverIDAccount = "appReceiverID"
+
+    static func loadAppReceiverID() -> UInt32? {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: appReceiverIDAccount,
+            kSecReturnData: true,
+            kSecMatchLimit: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data, data.count == 4 else { return nil }
+        return UInt32(data[0]) | (UInt32(data[1]) << 8) | (UInt32(data[2]) << 16) | (UInt32(data[3]) << 24)
+    }
+
+    static func saveAppReceiverID(_ receiverID: UInt32) {
+        var le = Data(count: 4)
+        le[0] = UInt8(truncatingIfNeeded: receiverID)
+        le[1] = UInt8(truncatingIfNeeded: receiverID >> 8)
+        le[2] = UInt8(truncatingIfNeeded: receiverID >> 16)
+        le[3] = UInt8(truncatingIfNeeded: receiverID >> 24)
+        let base: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: appReceiverIDAccount,
+        ]
+        SecItemDelete(base as CFDictionary)
+        var add = base
+        add[kSecValueData] = le
+        add[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        SecItemAdd(add as CFDictionary, nil)
+    }
+
+    /// This app install's stable receiver identity, generating + persisting one
+    /// on first use.
+    static func appReceiverID() -> UInt32 {
+        if let existing = loadAppReceiverID() { return existing }
+        let fresh = UInt32.random(in: 1...UInt32.max)
+        saveAppReceiverID(fresh)
+        return fresh
+    }
 }
 
 enum LibreLoopKeychainError: Error, CustomStringConvertible {

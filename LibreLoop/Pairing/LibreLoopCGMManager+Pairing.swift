@@ -66,10 +66,15 @@ extension LibreLoopCGMManager {
     /// the new PIN MUST be persisted before we touch BLE -- a crash or
     /// handshake failure must not leave the sensor stranded.
     public func applyNFCResponse(_ response: LibreLoopPairingService.NFCResponse) {
-        llog("NFC response applied: serial=\(response.sensorSerial) bleAddress=\(response.bleAddress ?? "nil") blePIN bytes=\(response.blePIN.count)")
+        llog("NFC response applied: serial=\(response.sensorSerial) receiverID=\(String(format: "0x%08x", response.receiverID)) bleAddress=\(response.bleAddress ?? "nil") blePIN bytes=\(response.blePIN.count)")
         cancelReconnect()
         var newState = state
         newState.receiverID = withUnsafeBytes(of: response.receiverID.littleEndian) { Data($0) }
+        // Persist the receiver identity app-wide (fixed Keychain key) so it
+        // survives a rawState wipe / plugin remove+re-add, and so future pairs
+        // (and recoveries) reuse it. Covers .recovery and migrates legacy
+        // random IDs to the stable key.
+        LibreLoopKeychain.saveAppReceiverID(response.receiverID)
         newState.sensorSerial = response.sensorSerial
         newState.bleAddress = response.bleAddress
         newState.blePIN = response.blePIN
@@ -155,6 +160,8 @@ extension LibreLoopCGMManager {
     }
 
     func adopt(monitor: LibreLoopSensorMonitor) {
+        let receiverIDLog = Self.receiverIDFromState(state.receiverID).map { String(format: "0x%08x", $0) } ?? "nil"
+        llog("ble: adopted monitor (connected); sensor=\(state.sensorSerial ?? "nil") receiverID=\(receiverIDLog)")
         self.monitor = monitor
         self.connectedAt = Date()
         // Each new BLE session gets its own backfill window.
@@ -785,7 +792,10 @@ extension LibreLoopCGMManager {
             return
         }
         let expectedPeripheral = state.peripheralID
-        llog("reconnect: attempt starting (peripheralID=\(expectedPeripheral?.uuidString ?? "any"))")
+        let receiverIDLog = Self.receiverIDFromState(state.receiverID).map { String(format: "0x%08x", $0) }
+            ?? LibreLoopKeychain.loadAppReceiverID().map { String(format: "0x%08x (app)", $0) }
+            ?? "nil"
+        llog("reconnect: attempt starting (peripheralID=\(expectedPeripheral?.uuidString ?? "any") receiverID=\(receiverIDLog))")
         await MainActor.run {
             self.lastReconnectAttemptAt = Date()
         }

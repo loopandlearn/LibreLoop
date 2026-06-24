@@ -318,15 +318,21 @@ public final class LibreLoopPairingService {
         do {
             switch mode {
             case .fresh:
-                let freshID = UInt32.random(in: 1...UInt32.max)
+                // Reuse this app install's stable receiver identity (generating +
+                // persisting one in the Keychain on first use) rather than a new
+                // random ID each pair. The Keychain copy survives a CGMManager
+                // rawState wipe / plugin remove+re-add, so re-scanning a sensor
+                // this app already paired switch-receivers with the same ID the
+                // sensor remembers — instead of a fresh ID it would reject.
+                let stableID = LibreLoopKeychain.appReceiverID()
                 // activateOrSwitchReceiver picks the right NFC command based
                 // on the sensor's state byte: activate if the sensor is still
                 // in the factory state, switchReceiver if it's already paired.
                 // This handles the common case of re-scanning a sensor that
                 // this app previously activated. For recovery with a known
                 // receiverID from a different source use .recovery(receiverID:).
-                scanResult = try await nfcReader.scan(mode: .activateOrSwitchReceiver(receiverID: freshID))
-                receiverID = freshID
+                scanResult = try await nfcReader.scan(mode: .activateOrSwitchReceiver(receiverID: stableID))
+                receiverID = stableID
             case .recovery(let id):
                 receiverID = id
                 scanResult = try await nfcReader.scan(mode: .switchReceiver(receiverID: id, timeSeconds: nil))

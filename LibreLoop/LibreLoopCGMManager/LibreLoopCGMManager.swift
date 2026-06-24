@@ -48,6 +48,12 @@ public final class LibreLoopCGMManager: CGMManager {
     /// the link, which fires didDisconnect, which schedules the next
     /// attempt. CB itself handles the wait-for-reachability.
     var reconnectAttempt: Task<Void, Never>?
+    /// Set once the CGM has been deleted. The BLE central is now shared across
+    /// manager lifetimes, so a deleted manager must stop driving it — otherwise
+    /// its reconnect loop re-establishes a session that collides with the
+    /// manager that replaces it (a re-add), producing PairingFlowError 7 during
+    /// the new pairing's handshake. Guards reconnect scheduling.
+    private(set) var isDeleted = false
     /// Wall-clock time we last spawned a reconnect Task. Used by
     /// scheduleReconnect to coalesce bursts of CB events (e.g., a
     /// flapping link can emit 4+ didDisconnect / didFailToConnect
@@ -700,13 +706,21 @@ public final class LibreLoopCGMManager: CGMManager {
         // keep issuing connect/scan on the shared central and fight whatever
         // manager replaces it (e.g. a re-add). Cancel our reconnect, drop our
         // listener, and release any link/scan we started.
+        // Set first so the disconnect we trigger below (and any in-flight CB
+        // callback) can't re-arm a reconnect via handleMonitorDisconnect /
+        // scheduleReconnect.
+        isDeleted = true
         cancelReconnect()
         // A non-nil listener task means the lazy `scanner` was initialized, so
         // it's safe to touch without forcing central creation on a never-paired
         // manager being deleted.
-        if eventListenerTask != nil {
-            eventListenerTask?.cancel()
-            eventListenerTask = nil
+        let scannerWasInitialized = eventListenerTask != nil
+        eventListenerTask?.cancel()
+        eventListenerTask = nil
+        // Drop the live monitor and its BLE link so no session of ours lingers
+        // on the shared central to collide with a future re-add's handshake.
+        monitor = nil
+        if scannerWasInitialized {
             scanner.stopScan()
             if let id = state.peripheralID,
                let peripheral = scanner.retrievePeripherals(withIdentifiers: [id]).first {

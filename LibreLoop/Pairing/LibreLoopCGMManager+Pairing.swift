@@ -160,6 +160,10 @@ extension LibreLoopCGMManager {
     }
 
     func adopt(monitor: LibreLoopSensorMonitor) {
+        guard !isDeleted else {
+            llog("adopt: manager deleted; discarding monitor")
+            return
+        }
         let receiverIDLog = Self.receiverIDFromState(state.receiverID).map { String(format: "0x%08x", $0) } ?? "nil"
         llog("ble: adopted monitor (connected); sensor=\(state.sensorSerial ?? "nil") receiverID=\(receiverIDLog)")
         self.monitor = monitor
@@ -651,10 +655,14 @@ extension LibreLoopCGMManager {
     }
 
     func handleMonitorDisconnect() {
-        llog("monitor reported disconnect; clearing and reconnecting")
         self.monitor = nil
         self.connectedAt = nil
         self.hasRequestedBackfillThisSession = false
+        guard !isDeleted else {
+            llog("monitor reported disconnect; manager deleted, not reconnecting")
+            return
+        }
+        llog("monitor reported disconnect; clearing and reconnecting")
         // Don't cancel any in-flight reconnect attempt here. The session
         // backing this monitor is already dead; a reconnect Task that's
         // running is either a fresh handshake on a new link (which we must
@@ -683,6 +691,10 @@ extension LibreLoopCGMManager {
     /// driven -- no polling loop, no Task.sleep, no shared state. CB
     /// handles the wait-for-reachability between attempts.
     func scheduleReconnect() {
+        guard !isDeleted else {
+            llog("reconnect: manager deleted; not scheduling")
+            return
+        }
         guard monitor == nil else { return }
         guard state.blePIN != nil, state.sensorSerial != nil else {
             llog("reconnect: no saved state; not scheduling")

@@ -240,6 +240,28 @@ public final class LibreLoopCGMManager: CGMManager {
     static let reconnectErrorDisplayThresholdCount = 3
     static let reconnectErrorDisplayThresholdInterval: TimeInterval = 2 * 60
 
+    /// After this many consecutive failures we conclude BLE reconnect can't
+    /// recover on its own (cached key rejected; no full-handshake recovery for an
+    /// active sensor) and tell the user to re-scan instead of looping forever.
+    static let reScanThresholdCount = 6
+    /// Alert raised once when reconnect is declared unrecoverable.
+    static let needsReScanAlertID: Alert.AlertIdentifier = "reconnectNeedsReScan"
+    /// One-shot guard so the re-scan alert fires once per failure run, not every
+    /// failed attempt.
+    var hasIssuedReScanAlert = false
+    /// Cap on the exponential reconnect backoff (seconds) so a persistently
+    /// failing/marginal link doesn't hammer the radio and drain the battery.
+    static let maxReconnectBackoff: TimeInterval = 300
+
+    /// Backoff before the next reconnect attempt, by consecutive-failure count.
+    /// First couple of retries are immediate (transient RF blips recover fast);
+    /// then exponential 5→300s.
+    static func reconnectBackoff(failures: Int) -> TimeInterval {
+        guard failures >= 3 else { return 0 }
+        let exp = min(failures - 3, 6)
+        return min(maxReconnectBackoff, 5 * pow(2.0, Double(exp)))
+    }
+
     func recordSample(_ sample: LibreLoopGlucoseSample) {
         recentSamples.insert(sample, at: 0)
         if recentSamples.count > Self.recentSamplesCap {

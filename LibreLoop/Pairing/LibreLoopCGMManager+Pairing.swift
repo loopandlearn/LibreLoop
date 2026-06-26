@@ -169,6 +169,13 @@ extension LibreLoopCGMManager {
         }
         let receiverIDLog = Self.receiverIDFromState(state.receiverID).map { String(format: "0x%08x", $0) } ?? "nil"
         llog("ble: adopted monitor (connected); sensor=\(state.sensorSerial ?? "nil") receiverID=\(receiverIDLog)")
+        // Recovered — clear any standing "re-scan needed" alert/state.
+        if hasIssuedReScanAlert {
+            hasIssuedReScanAlert = false
+            let id = Alert.Identifier(managerIdentifier: pluginIdentifier, alertIdentifier: Self.needsReScanAlertID)
+            let delegate = cgmManagerDelegate
+            Task { await delegate?.retractAlert(identifier: id) }
+        }
         self.monitor = monitor
         self.connectedAt = Date()
         // Each new BLE session gets its own backfill window.
@@ -907,24 +914,57 @@ extension LibreLoopCGMManager {
             let message = (error as? CustomStringConvertible)?.description
                 ?? error.localizedDescription
             llog("reconnect: attempt failed: \(message)")
-            await MainActor.run {
+            let backoff = await MainActor.run { () -> TimeInterval in
                 self.consecutiveReconnectFailures += 1
                 if self.consecutiveReconnectFailuresStartedAt == nil {
                     self.consecutiveReconnectFailuresStartedAt = Date()
                 }
-                // Only surface the error to the UI once the failure run
-                // is long-running enough that the user would actually
-                // want to know -- either many consecutive failures or
-                // failures spanning beyond the recovery window.
                 let count = self.consecutiveReconnectFailures
                 let elapsed = self.consecutiveReconnectFailuresStartedAt
                     .map { Date().timeIntervalSince($0) } ?? 0
-                if count >= Self.reconnectErrorDisplayThresholdCount
+                if count >= Self.reScanThresholdCount {
+                    // BLE reconnect is persistently failing — the cached session
+                    // is being rejected and there's no full-handshake recovery for
+                    // an active sensor. Tell the user the truth (re-scan) instead
+                    // of surfacing the cryptic handshake error, and alert once.
+                    self.lastReconnectError = "Can't reconnect after \(count) tries — re-scan the sensor to reconnect (or replace it if it was recently inserted)."
+                    if !self.hasIssuedReScanAlert {
+                        self.hasIssuedReScanAlert = true
+                        self.issueReScanAlert()
+                    }
+                } else if count >= Self.reconnectErrorDisplayThresholdCount
                     || elapsed >= Self.reconnectErrorDisplayThresholdInterval {
+                    // Only surface the raw error once the failure run is long
+                    // enough that a single self-recovering blip stays silent.
                     self.lastReconnectError = message
                 }
+                return Self.reconnectBackoff(failures: count)
+            }
+            // Back off before the attempt completes (single-flight, so this gates
+            // the next attempt) so a marginal/wedged link isn't hammered. Sleep is
+            // cancellable via cancelReconnect (delete / new pairing).
+            if backoff > 0 {
+                llog("reconnect: backing off \(Int(backoff))s after failure")
+                try? await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
             }
         }
+    }
+
+    /// One-time, time-sensitive alert telling the user BLE reconnect is stuck and
+    /// they should re-scan (or replace) the sensor. Routed through AlertManager.
+    private func issueReScanAlert() {
+        let delegate = cgmManagerDelegate
+        let identifier = Alert.Identifier(managerIdentifier: pluginIdentifier,
+                                          alertIdentifier: Self.needsReScanAlertID)
+        let body = "Loop can't reconnect to your FreeStyle Libre 3. Scan the sensor again to resume CGM readings. If it was recently inserted and keeps failing, the sensor may be defective — replace it."
+        let alert = Alert(
+            identifier: identifier,
+            foregroundContent: .init(title: "Re-scan sensor", body: body, acknowledgeActionButtonLabel: "OK"),
+            backgroundContent: .init(title: "Re-scan sensor", body: body, acknowledgeActionButtonLabel: "OK"),
+            trigger: .immediate,
+            interruptionLevel: .timeSensitive
+        )
+        Task { await delegate?.issueAlert(alert) }
     }
 
     private static func mapTrend(_ trend: LibreLoopGlucoseSample.Trend) -> GlucoseTrend? {

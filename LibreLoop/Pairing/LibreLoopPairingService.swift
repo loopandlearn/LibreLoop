@@ -199,35 +199,37 @@ public final class LibreLoopPairingService {
             onStage(.handshaking)
             let transport = SensorSessionTransport(session: session)
 
-            // Try the upstream cached/direct reconnect first if we have material
-            // for it. On any failure short-circuits to the full handshake path
-            // below -- upstream's guidance is "if it is rejected before Phase 6,
-            // fall back to the full authorization path".
+            // Cached/direct reconnect is the ONLY viable BLE path for an
+            // already-active sensor. If it fails we deliberately do NOT fall back
+            // to the full first-pair handshake: an active sensor rejects
+            // StartAuthentication 0x01 at Phase 6 (phase6VerificationFailed /
+            // "error 7"), so the fallback can never succeed here — it just wastes
+            // a connect cycle and surfaces a misleading error while the reconnect
+            // loop spins for hours. Propagate the failure so the caller backs off
+            // and prompts a re-scan. The full handshake remains only for legacy
+            // sensors that have no cached key (paired before phase5RawKey was
+            // persisted), whose only option it is.
             if let phase5RawKey {
                 let cachedFlow = PairingFlow(transport: transport, eventLogger: { message in llog(message) })
-                do {
-                    let cached = try await cachedFlow.runCachedReconnectHandshake(
-                        tail4: blePIN,
-                        phase5RawKey: phase5RawKey,
-                        r2Provider: { try Self.secureRandomBytes(count: 16) }
-                    )
-                    let material = cached.sessionMaterial
-                    let monitor = try LibreLoopSensorMonitor.make(
-                        scanner: scanner,
-                        session: session,
-                        kEnc: material.kEnc,
-                        ivEnc: material.ivEnc
-                    )
-                    return ReconnectOutcome(
-                        monitor: monitor,
-                        kEnc: material.kEnc,
-                        ivEnc: material.ivEnc,
-                        phase5RawKey: nil,
-                        path: .cached
-                    )
-                } catch {
-                    // Continue to full-handshake fallback below.
-                }
+                let cached = try await cachedFlow.runCachedReconnectHandshake(
+                    tail4: blePIN,
+                    phase5RawKey: phase5RawKey,
+                    r2Provider: { try Self.secureRandomBytes(count: 16) }
+                )
+                let material = cached.sessionMaterial
+                let monitor = try LibreLoopSensorMonitor.make(
+                    scanner: scanner,
+                    session: session,
+                    kEnc: material.kEnc,
+                    ivEnc: material.ivEnc
+                )
+                return ReconnectOutcome(
+                    monitor: monitor,
+                    kEnc: material.kEnc,
+                    ivEnc: material.ivEnc,
+                    phase5RawKey: nil,
+                    path: .cached
+                )
             }
 
             let phoneCert = try Self.loadFirstPairCert()

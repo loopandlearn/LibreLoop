@@ -1,31 +1,37 @@
 import SwiftUI
 import LibreLoop
+import LoopAlgorithm
+import LoopKitUI
 
 /// All the diagnostic data we have on one realtime glucose sample,
 /// pushed when the user taps a row in Recent Readings.
 struct LibreLoopSampleDetailView: View {
     let sample: LibreLoopGlucoseSample
+    @EnvironmentObject private var displayGlucosePreference: DisplayGlucosePreference
+    @Environment(\.appName) private var appName
 
     var body: some View {
         List {
-            Section("Reading") {
-                LabeledContent("Value", value: "\(Int(sample.valueMgDL)) mg/dL")
-                LabeledContent("Time", value: sample.date.formatted(date: .abbreviated, time: .standard))
-                LabeledContent("Time (relative)") {
+            Section(LocalizedString("Reading", comment: "Sample detail section: reading")) {
+                LabeledContent(LocalizedString("Value", comment: "Sample detail: glucose value"), value: displayGlucosePreference.format(
+                    LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: sample.valueMgDL)))
+                LabeledContent(LocalizedString("Time", comment: "Sample detail: time"), value: sample.date.formatted(date: .abbreviated, time: .standard))
+                LabeledContent(LocalizedString("Time (relative)", comment: "Sample detail: relative time")) {
                     Text(sample.date, style: .relative)
                         .foregroundStyle(.secondary)
                 }
-                LabeledContent("Trend", value: trendLabel)
+                LabeledContent(LocalizedString("Trend", comment: "Sample detail: trend"), value: trendLabel)
                 if let rate = sample.rateOfChangeMgDLPerMinute {
-                    LabeledContent("Rate of change", value: String(format: "%+.2f mg/dL/min", rate))
+                    LabeledContent(LocalizedString("Rate of change", comment: "Sample detail: rate of change"), value: displayGlucosePreference.formatMinuteRate(
+                        LoopQuantity(unit: .milligramsPerDeciliterPerMinute, doubleValue: rate)))
                 } else {
-                    LabeledContent("Rate of change", value: "—")
+                    LabeledContent(LocalizedString("Rate of change", comment: "Sample detail: rate of change"), value: "—")
                 }
             }
 
             if let issue = sample.qualityIssue {
-                Section("Quality") {
-                    LabeledContent("Issue") {
+                Section(LocalizedString("Quality", comment: "Sample detail section: quality")) {
+                    LabeledContent(LocalizedString("Issue", comment: "Sample detail: quality issue")) {
                         Text(issue)
                             .multilineTextAlignment(.trailing)
                             .foregroundStyle(.secondary)
@@ -33,8 +39,8 @@ struct LibreLoopSampleDetailView: View {
                 }
             }
 
-            Section("Forwarding to Loop") {
-                LabeledContent("Sent") {
+            Section(String(format: LocalizedString("Forwarding to %1$@", comment: "Sample detail section: forwarding (1: appName)"), appName)) {
+                LabeledContent(LocalizedString("Sent", comment: "Sample detail: sent to Loop")) {
                     HStack(spacing: 6) {
                         Image(systemName: sentIcon)
                             .foregroundStyle(sentColor)
@@ -42,7 +48,7 @@ struct LibreLoopSampleDetailView: View {
                     }
                 }
                 if let reason = sample.forwardSkipReason, !sample.wasForwarded {
-                    LabeledContent("Reason") {
+                    LabeledContent(LocalizedString("Reason", comment: "Sample detail: not-forwarded reason")) {
                         Text(reason)
                             .multilineTextAlignment(.trailing)
                             .foregroundStyle(.secondary)
@@ -50,19 +56,19 @@ struct LibreLoopSampleDetailView: View {
                 }
             }
 
-            Section("Source") {
-                LabeledContent("Path", value: sourceLabel)
+            Section(LocalizedString("Source", comment: "Sample detail section: source")) {
+                LabeledContent(LocalizedString("Path", comment: "Sample detail: source path"), value: sourceLabel)
                 LabeledContent("LifeCount", value: "\(sample.lifeCount)")
                     .monospacedDigit()
             }
 
-            Section("Sensor diagnostics") {
-                LabeledContent("Temperature (raw)", value: "0x\(String(sample.sensorTemperatureRaw, radix: 16, uppercase: true)) (\(sample.sensorTemperatureRaw))")
+            Section(LocalizedString("Sensor diagnostics", comment: "Sample detail section: diagnostics")) {
+                LabeledContent(LocalizedString("Temperature (raw)", comment: "Sample detail: raw sensor temperature"), value: "0x\(String(sample.sensorTemperatureRaw, radix: 16, uppercase: true)) (\(sample.sensorTemperatureRaw))")
                     .monospaced()
                     .font(.footnote)
             }
         }
-        .navigationTitle("Sample detail")
+        .navigationTitle(LocalizedString("Sample detail", comment: "Sample detail screen title"))
         .navigationBarTitleDisplayMode(.inline)
     }
 
@@ -80,26 +86,28 @@ struct LibreLoopSampleDetailView: View {
     }
 
     private var sentLabel: String {
-        guard sample.wasForwarded else { return "No" }
-        return sample.isActionable ? "Yes" : "Yes (display only)"
+        guard sample.wasForwarded else { return LocalizedString("No", comment: "Sample detail: not sent to Loop") }
+        return sample.isActionable
+            ? LocalizedString("Yes", comment: "Sample detail: sent to Loop")
+            : LocalizedString("Yes (display only)", comment: "Sample detail: sent display-only")
     }
 
     private var trendLabel: String {
         switch sample.trend {
         case .notDetermined:   return "—"
-        case .risingQuickly:   return "Rising quickly ⇈"
-        case .rising:          return "Rising ↗"
-        case .stable:          return "Stable →"
-        case .falling:         return "Falling ↘"
-        case .fallingQuickly:  return "Falling quickly ⇊"
+        case .risingQuickly:   return LocalizedString("Rising quickly ⇈", comment: "Trend: rising quickly")
+        case .rising:          return LocalizedString("Rising ↗", comment: "Trend: rising")
+        case .stable:          return LocalizedString("Stable →", comment: "Trend: stable")
+        case .falling:         return LocalizedString("Falling ↘", comment: "Trend: falling")
+        case .fallingQuickly:  return LocalizedString("Falling quickly ⇊", comment: "Trend: falling quickly")
         }
     }
 
     private var sourceLabel: String {
         switch sample.source {
-        case .realtime:           return "Realtime (live BLE)"
-        case .historicalBackfill: return "Historical backfill"
-        case .clinicalBackfill:   return "Clinical backfill"
+        case .realtime:           return LocalizedString("Realtime (live BLE)", comment: "Sample source: realtime")
+        case .historicalBackfill: return LocalizedString("Historical backfill", comment: "Sample source: historical backfill")
+        case .clinicalBackfill:   return LocalizedString("Clinical backfill", comment: "Sample source: clinical backfill")
         }
     }
 }

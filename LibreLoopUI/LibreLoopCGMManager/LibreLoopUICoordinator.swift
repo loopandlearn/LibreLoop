@@ -11,10 +11,14 @@ final class LibreLoopUICoordinator: UINavigationController, CGMManagerOnboarding
 
     private var cgmManager: LibreLoopCGMManager?
     private let colorPalette: LoopUIColorPalette
+    private let displayGlucosePreference: DisplayGlucosePreference
 
-    init(cgmManager: LibreLoopCGMManager?, colorPalette: LoopUIColorPalette) {
+    init(cgmManager: LibreLoopCGMManager?,
+         colorPalette: LoopUIColorPalette,
+         displayGlucosePreference: DisplayGlucosePreference) {
         self.cgmManager = cgmManager
         self.colorPalette = colorPalette
+        self.displayGlucosePreference = displayGlucosePreference
         super.init(navigationBarClass: UINavigationBar.self, toolbarClass: UIToolbar.self)
     }
 
@@ -69,6 +73,7 @@ final class LibreLoopUICoordinator: UINavigationController, CGMManagerOnboarding
                 self?.startScan(mode: .recovery(receiverID: receiverID))
             }
         )
+        .environment(\.appName, Bundle.main.bundleDisplayName)
         let vc = DismissibleHostingController(content: view, colorPalette: colorPalette)
         vc.title = "Recovery"
         pushViewController(vc, animated: true)
@@ -157,6 +162,8 @@ final class LibreLoopUICoordinator: UINavigationController, CGMManagerOnboarding
                 }
             }
         )
+        .environmentObject(displayGlucosePreference)
+        .environment(\.appName, Bundle.main.bundleDisplayName)
         return DismissibleHostingController(content: view, colorPalette: colorPalette)
     }
 
@@ -201,6 +208,7 @@ final class LibreLoopUICoordinator: UINavigationController, CGMManagerOnboarding
                 self?.startReplacementScan(mode: .recovery(receiverID: receiverID))
             }
         )
+        .environment(\.appName, Bundle.main.bundleDisplayName)
         let vc = DismissibleHostingController(content: view, colorPalette: colorPalette)
         vc.title = "Recovery"
         pushViewController(vc, animated: true)
@@ -227,5 +235,16 @@ final class LibreLoopUICoordinator: UINavigationController, CGMManagerOnboarding
     private func cancelReplacement() {
         isReplacing = false
         popToRootViewController(animated: true)
+    }
+}
+
+extension Bundle {
+    /// The host app's display name (Loop, Trio, a rebrand, …). `Bundle.main`
+    /// is the running app, not this plugin, so this resolves to whatever app
+    /// embedded LibreLoop. Used to seed `\.appName` for the plugin's views.
+    var bundleDisplayName: String {
+        return object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? "Loop"
     }
 }

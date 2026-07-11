@@ -182,6 +182,7 @@ extension LibreLoopCGMManager {
         self.connectedAt = Date()
         // Each new BLE session gets its own backfill window.
         self.hasRequestedBackfillThisSession = false
+        self.backfillFailuresThisSession = 0
         self.backfillForwardedLifeCounts.removeAll(keepingCapacity: true)
         self.lastHistoricalPageAt = nil
         monitor.setHandlers(
@@ -247,8 +248,15 @@ extension LibreLoopCGMManager {
                 try await monitor.requestHistoricalBackfill(fromLifeCount: from)
             } catch {
                 guard let self else { return }
-                llog("backfill request failed: \(String(describing: error))")
-                self.hasRequestedBackfillThisSession = false   // retry on next reading
+                self.backfillFailuresThisSession += 1
+                llog("backfill request failed (\(self.backfillFailuresThisSession)/\(Self.maxBackfillFailuresPerSession)): \(String(describing: error))")
+                if self.backfillFailuresThisSession < Self.maxBackfillFailuresPerSession {
+                    self.hasRequestedBackfillThisSession = false   // retry on next reading
+                } else {
+                    llog("backfill giving up for this session after \(self.backfillFailuresThisSession) failures; will retry on reconnect")
+                    // leave hasRequestedBackfillThisSession = true so we stop
+                    // hammering the sensor (and churning) every ~60s.
+                }
                 return
             }
             // Wait for the historical stream to drain before issuing the
@@ -694,6 +702,14 @@ extension LibreLoopCGMManager {
         activatedAt: Date,
         realtimeLifeCounts: Set<UInt16>
     ) {
+        // Thin clinical gap-fill to the 5-minute historical grid. Loop only
+        // needs ~5-min CGM cadence; forwarding every 1-min clinical record
+        // produced a dense 1-min cluster on the graph. lifeCount % 5 == 0
+        // matches the historical backfill grid (so the two dedup cleanly) and
+        // still fills the recent window historical can't reach yet — at 5-min
+        // resolution. Off-grid minutes are dropped here but still captured for
+        // the debug stream (captureClinicalStream runs before this).
+        guard lifeCount % 5 == 0 else { return }
         if realtimeLifeCounts.contains(lifeCount) {
             llog("clinical \(kind) at lifeCount=\(lifeCount) dropped: realtime-dup")
             return
@@ -724,9 +740,16 @@ extension LibreLoopCGMManager {
     }
 
     func handleMonitorDisconnect() {
+        // Tear the old monitor down before dropping the reference: stop() cancels
+        // its notifications task AND the silence watchdog. Without this the
+        // watchdog outlives the dead session and keeps firing readPatchStatus
+        // (each a 5s timeout) every ~60s through the whole outage — noise that
+        // buries the real connect/disconnect events in the log.
+        self.monitor?.stop()
         self.monitor = nil
         self.connectedAt = nil
         self.hasRequestedBackfillThisSession = false
+        self.backfillFailuresThisSession = 0
         guard !isDeleted else {
             llog("monitor reported disconnect; manager deleted, not reconnecting")
             return

@@ -71,6 +71,20 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
     private let lock = NSLock()
 
     private var task: Task<Void, Never>?
+    /// Per-channel data-plane silence watchdog: re-arms only the specific channel
+    /// that goes quiet, instead of blanket-toggling every CCCD on reconnect.
+    private var silenceWatchdog: Task<Void, Never>?
+    /// Last time a patchStatus frame arrived (notify or read-fallback).
+    private var lastPatchStatusAt: Date?
+    /// Last time a glucose frame arrived.
+    private var lastGlucoseAt: Date?
+    /// Stuck-value detector state: the last raw current-glucose word, the
+    /// lifeCount it arrived at, and the count of consecutive *advancing* frames
+    /// that repeated it. Catches a held/frozen glucose (e.g. after a DQ error) —
+    /// the repeats carry no error flag, so they look valid and get forwarded.
+    private var lastGlucoseWord: UInt16?
+    private var lastGlucoseWordLifeCount: UInt16?
+    private var stuckGlucoseRun: Int = 0
     private var readingHandler: ReadingHandler?
     private var disconnectHandler: DisconnectHandler?
     private var statusHandler: StatusHandler?
@@ -176,6 +190,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
             ready?()
             llog("monitor consuming session.notifications()")
             self.emitStatus("Waiting for first reading")
+            self.startSilenceWatchdog()
             var eventCount = 0
             for await event in self.session.notifications() {
                 eventCount += 1
@@ -183,6 +198,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
                 self.handle(event)
                 if Task.isCancelled { break }
             }
+            self.stopSilenceWatchdog()
             llog("monitor notification stream ended after \(eventCount) events; invoking disconnect handler")
             self.lock.lock()
             let handler = self.disconnectHandler
@@ -192,6 +208,81 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
         lock.lock()
         task = newTask
         lock.unlock()
+    }
+
+    /// Per-channel data-plane silence watchdog. Instead of blanket-toggling every
+    /// CCCD on each reconnect (churn that briefly interrupts healthy channels), we
+    /// arm minimally on connect and recover a *specific* channel only once it has
+    /// actually gone quiet:
+    ///  - patchStatus quiet ≥60s → a direct `readPatchStatus()` (no CCCD churn;
+    ///    the result returns via `notifications()` and is handled like any
+    ///    patchStatus frame, keeping `activatedAt`/lifecycle flowing). Still quiet
+    ///    ≥150s → a targeted off→on CCCD re-arm of patchStatus.
+    ///  - glucose quiet ≥150s (≈2+ missed ~1-min frames) → a targeted off→on
+    ///    re-arm of glucoseData (glucose has no read fallback).
+    /// Vendor parity: Abbott's app reads patchStatus when the notify stream goes
+    /// quiet. Churn is spent only on a channel proven un-armed.
+    private func startSilenceWatchdog() {
+        lock.lock()
+        let now = Date()
+        lastPatchStatusAt = now   // grace from the start of consumption
+        lastGlucoseAt = now
+        silenceWatchdog?.cancel()
+        let wd = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 20_000_000_000)   // check every 20s
+                guard let self, !Task.isCancelled else { return }
+                self.lock.lock()
+                let psLast = self.lastPatchStatusAt
+                let glLast = self.lastGlucoseAt
+                self.lock.unlock()
+                let t = Date()
+                let psQuiet = psLast.map { t.timeIntervalSince($0) } ?? .greatestFiniteMagnitude
+                let glQuiet = glLast.map { t.timeIntervalSince($0) } ?? .greatestFiniteMagnitude
+
+                if psQuiet >= 60 {
+                    if psQuiet >= 150 {
+                        llog("patchStatus quiet \(Int(psQuiet))s; targeted CCCD re-arm")
+                        try? await self.session.refreshDataPlaneNotifications(
+                            characteristics: [LibreSensorGATT.Char.patchStatus],
+                            forceReArm: [LibreSensorGATT.Char.patchStatus]
+                        )
+                    }
+                    llog("patchStatus quiet \(Int(psQuiet))s; issuing direct read (vendor-parity fallback)")
+                    do {
+                        _ = try await self.session.readPatchStatus()
+                    } catch {
+                        llog("readPatchStatus failed: \(String(describing: error))")
+                    }
+                    // Bump so we don't re-issue every tick while awaiting the
+                    // result; a real patchStatus frame (read or notify) resets it.
+                    self.lock.lock()
+                    self.lastPatchStatusAt = Date()
+                    self.lock.unlock()
+                }
+
+                if glQuiet >= 150 {
+                    llog("glucose quiet \(Int(glQuiet))s; targeted CCCD re-arm")
+                    try? await self.session.refreshDataPlaneNotifications(
+                        characteristics: [LibreSensorGATT.Char.glucoseData],
+                        forceReArm: [LibreSensorGATT.Char.glucoseData]
+                    )
+                    self.lock.lock()
+                    self.lastGlucoseAt = Date()
+                    self.lock.unlock()
+                }
+            }
+        }
+        silenceWatchdog = wd
+        lock.unlock()
+    }
+
+    private func stopSilenceWatchdog() {
+        lock.lock()
+        let wd = silenceWatchdog
+        silenceWatchdog = nil
+        lock.unlock()
+        wd?.cancel()
     }
 
     /// After Phase 6 the sensor's data-plane characteristics need a CCCD
@@ -205,8 +296,33 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
     private func refreshPostAuthNotifications() async -> Bool {
         do {
             llog("CCCD refresh starting")
-            try await session.refreshDataPlaneNotifications()
-            llog("CCCD refresh complete")
+            // Reproduce the 2026-05-06 working-backfill post-handshake state:
+            // force off→on on the FULL data-plane response set, INCLUDING
+            // historicData + clinicalData. The sensor appears to inspect the CCCD
+            // state of all data-plane response channels before accepting a
+            // patchControl command — an un-armed one yields ATT 0xFD ("CCCD
+            // improperly configured") on the backfill write. The current failing
+            // captures never armed historicData/clinicalData (they're not in
+            // dataPlaneNotifying); the 05-06 working trace did.
+            //
+            // This arms DESCRIPTORS only; it does NOT widen how much clinical/
+            // historical we forward to Loop — clinical backfill stays windowed
+            // (recentClinicalWindow), so the historical-drain mitigation holds.
+            // Arming historicData may trigger an automatic post-auth historical
+            // burst; that's backfill data we want and it's deduped by
+            // backfillForwardedLifeCounts. This is a one-time post-handshake cost
+            // (not the per-retry churn that was backed out); it also restores a
+            // real CCCD write to patchStatus/glucose that forceReArm:[] had left
+            // to a retention short-circuit.
+            let backfillReadyChars: [CBUUID] = LibreSensorGATT.Char.dataPlaneNotifying + [
+                LibreSensorGATT.Char.historicData,
+                LibreSensorGATT.Char.clinicalData,
+            ]
+            try await session.refreshDataPlaneNotifications(
+                characteristics: backfillReadyChars,
+                forceReArm: Set(backfillReadyChars)
+            )
+            llog("CCCD refresh complete (05-06 backfill-ready set: +historicData +clinicalData)")
             // Optionally keep the clinical channel subscribed for the whole
             // session so the Streams debug view's clinical/raw charts update
             // live. OFF by default (it adds per-reconnect clinical churn and is
@@ -259,6 +375,13 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
             label = "clinicalData"
         }
         do {
+            // Enable the response channel so backfill pages can stream in. NOTE:
+            // a forced off→on re-arm of this channel + patchControl was tried to
+            // clear the sensor's ATT 0xFD ("CCCD Improperly Configured") rejection
+            // of the command write and did NOT help — 0xFD persists with both
+            // CCCDs freshly written. So 0xFD is an application-level rejection
+            // (likely command sequence/nonce or state), not a literal CCCD issue;
+            // re-arming here only churns CCCDs every retry. Plain enable only.
             try await session.setNotify(true, for: chr, timeout: 5)
             llog("\(label) notifications enabled for backfill")
         } catch {
@@ -293,8 +416,11 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
         lock.lock()
         let t = task
         task = nil
+        let wd = silenceWatchdog
+        silenceWatchdog = nil
         lock.unlock()
         t?.cancel()
+        wd?.cancel()
     }
 
     private func handle(_ event: NotifyEvent) {
@@ -319,6 +445,7 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
                 llog("patch status currentLC=\(status.currentLifeCount) lifeCount=\(status.lifeCount) state=\(status.patchStateKind)")
                 lock.lock()
                 let handler = patchStatusHandler
+                lastPatchStatusAt = event.receivedAt   // feed the read-fallback watchdog
                 lock.unlock()
                 handler?(status)
                 emitRead("Patch status", summary: "LC \(status.currentLifeCount) \(status.patchStateKind)", at: event.receivedAt, [
@@ -386,18 +513,44 @@ public final class LibreLoopSensorMonitor: @unchecked Sendable {
                 // developer to inspect.
                 let byte14 = String(format: "0x%02x", reading.trendAndStatusByte)
                 let plaintextHex = packet.plaintext.map { String(format: "%02x", $0) }.joined()
+                // Surface the decoded data-quality evidence on every frame: the
+                // raw current-glucose word (the field that froze in the stuck-53
+                // case), the DQ error (0x8000 family), sensor condition, and
+                // actionability. Previously these were only visible when they
+                // escalated to a blocking issue — but a held value reports clean.
+                let mgdlStr = reading.currentGlucoseMgDL.map(String.init) ?? "nil"
+                let word = String(format: "0x%04x", reading.currentWord)
+                let dqInfo = "word=\(word) dq=\(reading.dqError) cond=\(reading.sensorCondition) act=\(reading.actionability)"
                 if assessment.issues.isEmpty {
-                    llog("glucose mgdl=\(reading.currentGlucoseMgDL.map(String.init) ?? "nil") lifeCount=\(reading.lifeCount) trend=\(String(describing: reading.trendKind)) byte14=\(byte14) rest=\(reading.rest) plaintext=\(plaintextHex)")
+                    llog("glucose mgdl=\(mgdlStr) lifeCount=\(reading.lifeCount) trend=\(String(describing: reading.trendKind)) byte14=\(byte14) rest=\(reading.rest) \(dqInfo) plaintext=\(plaintextHex)")
                 } else {
                     let issueText = assessment.issues.map { String(describing: $0) }.joined(separator: ", ")
-                    llog("glucose mgdl=\(reading.currentGlucoseMgDL.map(String.init) ?? "nil") lifeCount=\(reading.lifeCount) byte14=\(byte14) rest=\(reading.rest) issues=[\(issueText)] plaintext=\(plaintextHex)")
+                    llog("glucose mgdl=\(mgdlStr) lifeCount=\(reading.lifeCount) byte14=\(byte14) rest=\(reading.rest) \(dqInfo) issues=[\(issueText)] plaintext=\(plaintextHex)")
                 }
                 // Surface lifeCount unconditionally -- warmup readings have
                 // valid lifeCount but nil mgdl, and that's still enough to
                 // pin activatedAt.
                 lock.lock()
                 let lcHandler = lifeCountHandler
+                lastGlucoseAt = event.receivedAt   // feed the silence watchdog
+                // Stuck-value detector: count consecutive *advancing* frames that
+                // repeat the raw current-glucose word. A same-minute resend
+                // (lifeCount unchanged) doesn't count; a new lifeCount carrying
+                // an identical word is a held/frozen value.
+                if reading.lifeCount == lastGlucoseWordLifeCount {
+                    // same-minute resend — ignore for the stuck run
+                } else if lastGlucoseWord == reading.currentWord {
+                    stuckGlucoseRun += 1
+                } else {
+                    stuckGlucoseRun = 0
+                }
+                lastGlucoseWord = reading.currentWord
+                lastGlucoseWordLifeCount = reading.lifeCount
+                let stuckRun = stuckGlucoseRun
                 lock.unlock()
+                if stuckRun >= 3 {
+                    llog("STUCK: current glucose word \(String(format: "0x%04x", reading.currentWord)) unchanged across \(stuckRun + 1) advancing frames (lifeCount=\(reading.lifeCount) mgdl=\(mgdlStr) dq=\(reading.dqError))")
+                }
                 lcHandler?(reading.lifeCount)
                 if let sample = Self.makeSample(from: reading, assessment: assessment, receivedAt: event.receivedAt) {
                     lock.lock()

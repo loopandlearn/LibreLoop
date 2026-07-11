@@ -415,6 +415,14 @@ public final class LibreLoopCGMManager: CGMManager {
     /// Reset when the monitor is cleared so the next session re-requests.
     var hasRequestedBackfillThisSession: Bool = false
 
+    /// Backfill failures so far this BLE session. A failed backfill retries on
+    /// the next reading, but capped so a persistently-rejecting sensor (e.g. the
+    /// ATT 0xFD command rejection) doesn't re-attempt every ~60s for the whole
+    /// session. Reset when the monitor is cleared.
+    var backfillFailuresThisSession: Int = 0
+    /// Max backfill attempts per BLE session before giving up until reconnect.
+    static let maxBackfillFailuresPerSession = 3
+
     /// Set of lifeCounts we've forwarded as backfill (historical or clinical)
     /// during the current BLE session. Used to suppress clinical samples that
     /// overlap historical and vice versa, on top of the realtime-overlap
@@ -565,11 +573,16 @@ public final class LibreLoopCGMManager: CGMManager {
             }
         case .willRestoreState(let r):
             self.handleRestorationEvent(r)
-        case .didDiscover:
+        case .didDiscover(let d):
             // Discoveries are consumed by the pair-time scan inside
-            // LibreLoopPairingService via its own events() subscription.
-            // The CGMManager doesn't drive scans, so ignore here.
-            break
+            // LibreLoopPairingService via its own events() subscription; the
+            // CGMManager doesn't drive scans, so we don't act here. But log a
+            // discovery of OUR sensor: if it's advertising (with RSSI) while a
+            // reconnect is failing, that's exactly the visibility otherwise
+            // missing during an out-of-range/back-in-range window.
+            if let id = self.state.peripheralID, d.id == id {
+                llog("ble: didDiscover \(d.id.uuidString) rssi=\(d.rssi) (our sensor advertising)")
+            }
         }
     }
 

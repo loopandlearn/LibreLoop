@@ -1,14 +1,14 @@
 {
-  "originHash" : "81cc9aefffe5df833cec0e3f4d4db42268bf0b3f14788633798394959b7a010a",
-  "pins" : [
+  "originHash": "81cc9aefffe5df833cec0e3f4d4db42268bf0b3f14788633798394959b7a010a",
+  "pins": [
     {
-      "identity" : "librecrkit",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/airedev326/LibreCRKit.git",
-      "state" : {
-        "revision" : "abb0f7e853da813ad1fb6d7662909a61d4596752"
+      "identity": "librecrkit",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/airedev326/LibreCRKit.git",
+      "state": {
+        "revision": "66920c6d5a0d13c3047a1920d514c26b19e87cb4"
       }
     }
   ],
-  "version" : 3
+  "version": 3
 }

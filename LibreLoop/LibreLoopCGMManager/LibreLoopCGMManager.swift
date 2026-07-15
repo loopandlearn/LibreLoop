@@ -174,7 +174,8 @@ public final class LibreLoopCGMManager: CGMManager {
             hasLiveMonitor: monitor != nil,
             wearDurationMinutes: state.wearDurationMinutes,
             warmupDurationMinutes: state.warmupDurationMinutes,
-            needsReplacement: state.sensorNeedsReplacement
+            needsReplacement: state.sensorNeedsReplacement,
+            endedNormally: state.sensorEndedNormally
         )
     }
 

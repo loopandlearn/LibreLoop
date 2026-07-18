@@ -181,6 +181,9 @@ extension LibreLoopCGMManager {
         }
         self.monitor = monitor
         self.connectedAt = Date()
+        // Fresh session: hasn't streamed a reading yet. Drives the
+        // connect→no-stream livelock accounting in handleMonitorDisconnect.
+        self.currentSessionProducedData = false
         // Each new BLE session gets its own backfill window.
         self.hasRequestedBackfillThisSession = false
         self.backfillFailuresThisSession = 0
@@ -430,6 +433,9 @@ extension LibreLoopCGMManager {
     }
 
     func ingest(_ sample: LibreLoopGlucoseSample) {
+        // Mark that this monitor session has actually streamed — a healthy
+        // disconnect, not a connect→arm-fail cycle (see handleMonitorDisconnect).
+        currentSessionProducedData = true
         recordSample(sample)
         // Now that we have a confirmed realtime reading, we know the
         // sensor's current lifecount and can issue a sensible-range backfill
@@ -774,7 +780,21 @@ extension LibreLoopCGMManager {
             llog("monitor reported disconnect; manager deleted, not reconnecting")
             return
         }
-        llog("monitor reported disconnect; clearing and reconnecting")
+        // Distinguish a healthy stream-then-drop from a connect→adopt→arm-fail
+        // cycle that never streamed. The latter, repeated, is the CCCD-arming
+        // livelock: the link connects and adopts a monitor every cycle (so the
+        // reconnect-failure counter keeps resetting and nothing escalates),
+        // but post-auth notification arming times out, so no glucose flows.
+        if currentSessionProducedData {
+            consecutiveNoStreamDisconnects = 0
+        } else {
+            consecutiveNoStreamDisconnects += 1
+        }
+        let liveAge = state.latestReadingTimestamp.map { "\(Int(Date().timeIntervalSince($0)))s ago" } ?? "never"
+        llog("monitor reported disconnect; clearing and reconnecting (streamedThisSession=\(currentSessionProducedData), consecutiveNoStreamCycles=\(consecutiveNoStreamDisconnects), lastLiveGlucose=\(liveAge))")
+        if consecutiveNoStreamDisconnects >= Self.noStreamLivelockWarnThreshold {
+            llog("WARNING: \(consecutiveNoStreamDisconnects) consecutive connect→no-stream cycles — sensor connects and adopts a monitor but post-auth notification arming keeps failing (CCCD notify-ack timeout), so no glucose flows. This is the arming livelock that has historically cleared only on a fresh characteristic discovery (e.g. app restart).")
+        }
         // Don't cancel any in-flight reconnect attempt here. The session
         // backing this monitor is already dead; a reconnect Task that's
         // running is either a fresh handshake on a new link (which we must

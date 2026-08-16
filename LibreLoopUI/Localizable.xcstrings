@@ -184,6 +184,9 @@
       "comment" : "Sample detail section: forwarding (1: appName)\n   Settings section: forwarding (1: appName)",
       "extractionState" : "manual"
     },
+    "FreeStyle Libre 3 / 3+" : {
+      "comment" : "Settings screen title"
+    },
     "Glucose Streams" : {
       "comment" : "Developer: glucose streams debug view",
       "extractionState" : "manual"

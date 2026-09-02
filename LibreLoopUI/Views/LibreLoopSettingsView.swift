@@ -152,10 +152,24 @@ struct LibreLoopSettingsView: View {
             || viewModel.bleAddress != nil
             || viewModel.blePINHex != nil
             || viewModel.receiverIDHex != nil
+            || viewModel.firmwareVersion != nil
+            || viewModel.generation != nil
         if hasAny {
             Section(LocalizedString("Debug Info", comment: "Settings section: debug info")) {
                 if let serial = viewModel.sensorSerial {
                     LabeledContent(LocalizedString("Serial", comment: "Sensor serial row label"), value: serial)
+                        .monospaced()
+                        .font(.footnote)
+                        .textSelection(.enabled)
+                }
+                if let fw = viewModel.firmwareVersion {
+                    LabeledContent(LocalizedString("Firmware", comment: "Sensor firmware version row label"), value: fw)
+                        .monospaced()
+                        .font(.footnote)
+                        .textSelection(.enabled)
+                }
+                if let gen = viewModel.generation {
+                    LabeledContent(LocalizedString("Generation", comment: "Sensor generation row label"), value: gen)
                         .monospaced()
                         .font(.footnote)
                         .textSelection(.enabled)
@@ -642,6 +656,8 @@ final class LibreLoopSettingsViewModel: ObservableObject, LibreLoopStateObserver
     @Published private(set) var receiverIDHex: String?
     @Published private(set) var activatedAt: Date?
     @Published private(set) var sensorModel: String?
+    @Published private(set) var firmwareVersion: String?
+    @Published private(set) var generation: String?
     @Published private(set) var minuteByMinuteForwardingEnabled: Bool
 
     init(cgmManager: LibreLoopCGMManager) {
@@ -659,6 +675,8 @@ final class LibreLoopSettingsViewModel: ObservableObject, LibreLoopStateObserver
         self.receiverIDHex = cgmManager.state.receiverID.map(Self.hex)
         self.activatedAt = cgmManager.state.activatedAt
         self.sensorModel = cgmManager.state.sensorModel
+        self.firmwareVersion = cgmManager.state.firmwareVersion
+        self.generation = cgmManager.state.generation.map(String.init)
         self.minuteByMinuteForwardingEnabled = cgmManager.state.experimentalMinuteByMinuteForwarding
     }
 
@@ -709,6 +727,8 @@ final class LibreLoopSettingsViewModel: ObservableObject, LibreLoopStateObserver
             self.receiverIDHex = state.receiverID.map(Self.hex)
             self.activatedAt = state.activatedAt
             self.sensorModel = state.sensorModel
+            self.firmwareVersion = state.firmwareVersion
+            self.generation = state.generation.map(String.init)
             self.minuteByMinuteForwardingEnabled = state.experimentalMinuteByMinuteForwarding
         }
     }

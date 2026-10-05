@@ -41,7 +41,7 @@ struct LibreLoopSettingsView: View {
             deleteSection
             aboutSection
         }
-        .navigationTitle("FreeStyle Libre 3")
+        .navigationTitle(LocalizedString("FreeStyle Libre 3 / 3+", comment: "Settings screen title"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {

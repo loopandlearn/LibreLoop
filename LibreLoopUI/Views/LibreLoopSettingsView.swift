@@ -36,7 +36,6 @@ struct LibreLoopSettingsView: View {
             lastReadingSection
             recentReadingsSection
             debugInfoSection
-            forwardingSection
             developerSection
             activitySection
             deleteSection

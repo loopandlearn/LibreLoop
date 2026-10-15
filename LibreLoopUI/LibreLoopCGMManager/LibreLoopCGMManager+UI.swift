@@ -6,7 +6,7 @@ import LoopKit
 import LoopKitUI
 import LibreLoop
 
-extension LibreLoopCGMManager: CGMManagerUI {
+extension LibreLoopCGMManager: @retroactive CGMManagerUI {
     public static var onboardingImage: UIImage? {
         UIImage(named: "FSL3-sensor", in: Bundle(for: LibreLoopSettingsViewModel.self), compatibleWith: nil)
     }
@@ -123,9 +123,7 @@ extension LibreLoopCGMManager: CGMManagerUI {
         }
     }
 
-    public func glucoseRangeCategory(for glucose: LoopKit.GlucoseSampleValue) -> LoopKit.GlucoseRangeCategory? { nil }
-
-    public func unitDidChange(to displayGlucoseUnit: HKUnit) { }
+    public func glucoseRangeCategory(for glucose: GlucoseSampleValue) -> GlucoseRangeCategory? { nil }
 }
 
 private struct LibreLoopLifecycleProgress: DeviceLifecycleProgress {

@@ -1,6 +1,8 @@
 # LibreLoop
 
-FreeStyle Libre 3 CGMManager plugin for [Loop](https://github.com/LoopKit/Loop), built on the reverse-engineered Libre 3 protocol via [RoundWhiteDiscKit](https://github.com/airedev326/RoundWhiteDiscKit). The package ships without its lookup tables; LibreLoop downloads them once from Arweave when the plugin is added.
+FreeStyle Libre 3 CGMManager plugin for [Loop](https://github.com/LoopKit/Loop), built on the reverse-engineered Libre 3 protocol via [RoundWhiteDiscKit](https://github.com/airedev326/RoundWhiteDiscKit).
+
+> **LibreLoop is not an Abbott product.** It is independent open-source software, not made, endorsed, supported or reviewed by Abbott. FreeStyle Libre is a trademark of Abbott, used here only to say which sensors LibreLoop works with. Abbott does not provide support for LibreLoop; don't contact Abbott about it.
 
 ## Status
 

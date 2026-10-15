@@ -334,7 +334,7 @@ extension LibreLoopCGMManager {
         return status.sensorError != .none ? status.sensorError.description : status.sensorAttention.description
     }
 
-    /// Sends a `sensorIssue` when the sensor's reported state changes, and this sensor's
+    /// Logs a change in the sensor's reported state and sends this sensor's
     /// `sensorEnd` once it needs replacing. Runs after `notifySensorAttentionIfNeeded`,
     /// which decides whether the sensor ended normally or failed.
     func recordSensorStateIfChanged(_ status: PatchStatus) {
@@ -344,16 +344,11 @@ extension LibreLoopCGMManager {
         guard issue != state.reportedSensorIssue || ends else { return }
 
         var events: [PersistedCgmEvent] = []
+        // The legacy LoopKit has no .sensorIssue event type, CgmEventError or
+        // metadata, so the issue is only logged here. The state is still tracked
+        // so a later sensorEnd isn't suppressed.
         if let issue, issue != state.reportedSensorIssue {
-            var failed = false
-            if case .failed = sensorLifecycle { failed = true }
-            events.append(PersistedCgmEvent(
-                date: Date(),
-                type: .sensorIssue,
-                deviceIdentifier: serial,
-                error: CgmEventError(code: issue, isFatal: failed),
-                metadata: ["errorData": String(status.errorData), "patchState": String(status.patchState)]
-            ))
+            llog("sensor issue \(issue) errorData=\(status.errorData) patchState=\(status.patchState)")
         }
         if ends {
             events.append(PersistedCgmEvent(date: Date(), type: .sensorEnd, deviceIdentifier: serial))
@@ -705,8 +700,7 @@ extension LibreLoopCGMManager {
                 // duplicate point at the same timestamp.
                 syncIdentifier: "libreloop-\(serial)-\(sample.lifeCount)",
                 syncVersion: 1,
-                device: device,
-                isBackfill: true
+                device: device
             ))
             backfillForwardedLifeCounts.insert(sample.lifeCount)
         }
@@ -809,8 +803,7 @@ extension LibreLoopCGMManager {
             wasUserEntered: false,
             syncIdentifier: "libreloop-\(serial)-\(lifeCount)",
             syncVersion: 1,
-            device: device,
-            isBackfill: true
+            device: device
         )
         backfillForwardedLifeCounts.insert(lifeCount)
         llog("forwarded clinical \(kind) sample to Loop: \(mgdl) mg/dL lifeCount=\(lifeCount) sampleDate=\(date.timeIntervalSince1970)")

@@ -123,7 +123,8 @@ extension LibreLoopCGMManager: @retroactive CGMManagerUI {
         }
     }
 
-    public func glucoseRangeCategory(for glucose: GlucoseSampleValue) -> GlucoseRangeCategory? { nil }
+    // LoopKit and LoopAlgorithm both declare GlucoseSampleValue; disambiguate
+    public func glucoseRangeCategory(for glucose: LoopKit.GlucoseSampleValue) -> LoopKit.GlucoseRangeCategory? { nil }
 }
 
 private struct LibreLoopLifecycleProgress: DeviceLifecycleProgress {

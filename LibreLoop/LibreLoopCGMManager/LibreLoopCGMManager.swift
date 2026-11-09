@@ -848,7 +848,7 @@ public final class LibreLoopCGMManager: CGMManager {
         }
     }
 
-    public func delete() async {
+    @MainActor public func delete() async {
         // The central is shared and outlives this manager, so a deleted manager
         // must stop driving it — otherwise its event listener + reconnect loop
         // keep issuing connect/scan on the shared central and fight whatever
